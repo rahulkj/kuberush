@@ -1,0 +1,3 @@
+# Known false positive: .envrc is a direnv config that loads secrets from
+# the macOS keyring at runtime; it contains no committed credentials.
+.envrc
