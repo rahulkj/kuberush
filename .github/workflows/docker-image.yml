@@ -46,6 +46,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ vars.HARBOR_REGISTRY_URL }}/${{ vars.HARBOR_PROJECT }}/${{ vars.IMAGE_NAME }}:latest
             ${{ vars.HARBOR_REGISTRY_URL }}/${{ vars.HARBOR_PROJECT }}/${{ vars.IMAGE_NAME }}:${{ github.sha }}
