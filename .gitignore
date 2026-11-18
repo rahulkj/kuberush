@@ -1,0 +1,6 @@
+bin/
+.docker-harbor/
+*.exe
+*.test
+.coverage
+.DS_Store

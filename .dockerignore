@@ -1,0 +1,9 @@
+.git
+.github
+ci
+deploy
+docs
+bin
+*.md
+.envrc
+.DS_Store

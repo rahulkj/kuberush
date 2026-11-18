@@ -1,0 +1,104 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: ["*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      HARBOR_REGISTRY_URL: ${{ vars.HARBOR_REGISTRY_URL }}
+      HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Harbor Registry (buildx auth config)
+        env:
+          HARBOR_REGISTRY_URL: ${{ vars.HARBOR_REGISTRY_URL }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          AUTH_DIR="${RUNNER_TEMP}/harbor-auth"
+          mkdir -p "${AUTH_DIR}"
+          cat > "${AUTH_DIR}/config.json" <<EOF
+          {
+            "auths": {
+              "${HARBOR_REGISTRY_URL}": {
+                "auth": "$(printf '%s' "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" | base64 -w0)"
+              }
+            }
+          }
+          EOF
+          echo "DOCKER_CONFIG=${AUTH_DIR}" >> "${GITHUB_ENV}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ vars.HARBOR_REGISTRY_URL }}/${{ vars.HARBOR_PROJECT }}/${{ vars.IMAGE_NAME }}:latest
+            ${{ vars.HARBOR_REGISTRY_URL }}/${{ vars.HARBOR_PROJECT }}/${{ vars.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Verify the pushed image
+        run: |
+          docker buildx imagetools inspect ${{ vars.HARBOR_REGISTRY_URL }}/${{ vars.HARBOR_PROJECT }}/${{ vars.IMAGE_NAME }}:${{ github.sha }} | tee manifest.txt
+          grep -q 'linux/amd64' manifest.txt
+          grep -q 'linux/arm64' manifest.txt
+          echo "✅ Multi-arch manifest contains both amd64 and arm64"
+
+      - name: Checkout deployment-manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: rahulkj/deployment-manifests
+          token: ${{ secrets.DEPLOY_PAT }}
+          path: deployment-manifests
+
+      - name: Install envsubst
+        run: sudo apt-get install -y gettext-base
+
+      - name: Generate VM deployment manifest
+        env:
+          VERSION: ${{ github.sha }}
+          HARBOR_REGISTRY_URL: ${{ vars.HARBOR_REGISTRY_URL }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+        run: |
+          cd deployment-manifests
+          mkdir -p vm
+          envsubst < ${{ github.workspace }}/ci/deployment.yml > vm/${{ vars.IMAGE_NAME }}-deployment.yaml
+
+      - name: Generate Pi deployment manifest
+        env:
+          VERSION: ${{ github.sha }}
+          HARBOR_REGISTRY_URL: ${{ vars.HARBOR_REGISTRY_URL }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+        run: |
+          cd deployment-manifests
+          mkdir -p pi
+          envsubst < ${{ github.workspace }}/ci/deployment.yml > pi/${{ vars.IMAGE_NAME }}-deployment.yaml
+
+      - name: Commit and push manifest
+        working-directory: deployment-manifests
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add vm/${{ vars.IMAGE_NAME }}-deployment.yaml
+          git add pi/${{ vars.IMAGE_NAME }}-deployment.yaml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update ${{ vars.IMAGE_NAME }} deployments to version ${{ github.sha }}"
+            git push
+          fi

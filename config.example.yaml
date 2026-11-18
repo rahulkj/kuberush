@@ -1,0 +1,17 @@
+# KubeRush example configuration
+health:
+  listen_address: ":8080"
+
+# Future sections (planned):
+# kubernetes:
+#   kubeconfig: ""        # optional; empty uses in-cluster or default kubeconfig resolution
+#   namespaces:
+#     include: []
+#     exclude: []
+# logging:
+#   level: info
+# exporters:
+#   logs:
+#     - type: stdout
+#   metrics: []
+#   traces: []
