@@ -41,9 +41,20 @@ func main() {
 
 	fmt.Printf("kuberush starting (health on %s)\n", cfg.Health.ListenAddress)
 
-	// Placeholder exporter pipeline (ADR 0001): stdout log sink
-	logSink := exporter.NewStdoutLogSink()
-	fmt.Printf("exporter initialized: log sink=%s (stdout)\n", logSink.Name())
+	// Exporter pipeline (ADR 0001): configure sinks
+	var logSinks []exporter.LogSink
+	if cfg.Exporters.Stdout {
+		logSinks = append(logSinks, exporter.NewStdoutLogSink())
+	}
+	if cfg.Exporters.OTLPLogs.Enabled {
+		logSinks = append(logSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint))
+	}
+	if len(logSinks) == 0 {
+		logSinks = append(logSinks, exporter.NewStdoutLogSink()) // default fallback
+	}
+	for _, s := range logSinks {
+		fmt.Printf("exporter initialized: log sink=%s\n", s.Name())
+	}
 
 	// Start pod discovery (all namespaces)
 	pw, err := discovery.NewPodWatcher(kubeconfig)
@@ -63,7 +74,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = hSrv.Shutdown(shutdownCtx)
-	_ = logSink.Close()
+	for _, s := range logSinks {
+		_ = s.Close()
+	}
 
 	fmt.Println("kuberush stopped")
 }
