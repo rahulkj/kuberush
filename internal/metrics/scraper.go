@@ -85,12 +85,12 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 				s.selfMetrics.IncScrapeAttempt("failure")
 			}
 			if s.metricsExporter != nil {
-				mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, url, duration, 0, false)
+				mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, pod.Spec.NodeName, url, duration, 0, false)
 				_ = s.metricsExporter.Export(ctx, mreq)
 			}
 			continue
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 		resp.Body.Close()
 		success := resp.StatusCode < 300
 		if s.selfMetrics != nil {
@@ -107,14 +107,30 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 			Pod:       pod.Name,
 			Container: "metrics-scrape",
 			NodeName:  pod.Spec.NodeName,
+			PodLabels: pod.Labels,
 			Message:   msg,
 		}
 		for _, sink := range s.sinks {
 			_ = sink.WriteLogs(ctx, []exporter.LogRecord{rec})
 		}
 		if s.metricsExporter != nil {
-			mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, url, duration, int64(len(body)), success)
+			mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, pod.Spec.NodeName, url, duration, int64(len(body)), success)
 			_ = s.metricsExporter.Export(ctx, mreq)
+			if success && len(body) > 0 {
+				converted, err := ConvertPrometheusToOTLP(body, TargetInfo{
+					Namespace: pod.Namespace,
+					Pod:       pod.Name,
+					NodeName:  pod.Spec.NodeName,
+					URL:       url,
+				}, time.Now())
+				if err != nil {
+					fmt.Printf("[metrics] convert %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+				} else if converted != nil {
+					if err := s.metricsExporter.Export(ctx, converted); err != nil {
+						fmt.Printf("[metrics] export converted %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+					}
+				}
+			}
 		}
 	}
 }

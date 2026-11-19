@@ -46,6 +46,12 @@ func (e *OTLPLogsExporter) WriteLogs(ctx context.Context, records []LogRecord) e
 		if r.NodeName != "" {
 			attrs = append(attrs, &commonpb.KeyValue{Key: "k8s.node.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.NodeName}}})
 		}
+		for k, v := range r.PodLabels {
+			if k == "" {
+				continue
+			}
+			attrs = append(attrs, &commonpb.KeyValue{Key: "k8s.pod.label." + k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}})
+		}
 		lr := &logspb.LogRecord{
 			TimeUnixNano: uint64(time.Now().UnixNano()),
 			Body: &commonpb.AnyValue{

@@ -15,23 +15,28 @@ import (
 	"github.com/rahulkj/kubemon/internal/selfmetrics"
 )
 
+type podInfo struct {
+	NodeName string
+	Labels   map[string]string
+}
+
 type Collector struct {
 	client  kubernetes.Interface
 	sinks   []exporter.LogSink
 	metrics *selfmetrics.Metrics
 
-	mu       sync.Mutex
-	running  map[string]context.CancelFunc // key: ns/pod/container
-	podNodes map[string]string             // key: ns/pod
+	mu      sync.Mutex
+	running map[string]context.CancelFunc // key: ns/pod/container
+	pods    map[string]podInfo            // key: ns/pod
 }
 
 func NewCollector(client kubernetes.Interface, sinks []exporter.LogSink, metrics *selfmetrics.Metrics) *Collector {
 	return &Collector{
-		client:   client,
-		sinks:    sinks,
-		metrics:  metrics,
-		running:  make(map[string]context.CancelFunc),
-		podNodes: make(map[string]string),
+		client:  client,
+		sinks:   sinks,
+		metrics: metrics,
+		running: make(map[string]context.CancelFunc),
+		pods:    make(map[string]podInfo),
 	}
 }
 
@@ -45,7 +50,7 @@ func (c *Collector) podKey(ns, pod string) string {
 
 func (c *Collector) HandlePod(pod *corev1.Pod) {
 	c.mu.Lock()
-	c.podNodes[c.podKey(pod.Namespace, pod.Name)] = pod.Spec.NodeName
+	c.pods[c.podKey(pod.Namespace, pod.Name)] = podInfo{NodeName: pod.Spec.NodeName, Labels: pod.Labels}
 	c.mu.Unlock()
 
 	if pod.Status.Phase != corev1.PodRunning {
@@ -55,7 +60,7 @@ func (c *Collector) HandlePod(pod *corev1.Pod) {
 		if cs.State.Running == nil {
 			continue
 		}
-		c.startTailer(pod.Namespace, pod.Name, pod.Spec.NodeName, cs.Name)
+		c.startTailer(pod.Namespace, pod.Name, cs.Name)
 	}
 }
 
@@ -69,10 +74,10 @@ func (c *Collector) StopPod(ns, name string) {
 			delete(c.running, k)
 		}
 	}
-	delete(c.podNodes, c.podKey(ns, name))
+	delete(c.pods, c.podKey(ns, name))
 }
 
-func (c *Collector) startTailer(ns, podName, nodeName, container string) {
+func (c *Collector) startTailer(ns, podName, container string) {
 	k := c.key(ns, podName, container)
 	c.mu.Lock()
 	if _, exists := c.running[k]; exists {
@@ -138,13 +143,14 @@ func (c *Collector) streamLogs(ctx context.Context, ns, podName, container strin
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			c.mu.Lock()
-			nodeName := c.podNodes[c.podKey(ns, podName)]
+			info := c.pods[c.podKey(ns, podName)]
 			c.mu.Unlock()
 			rec := exporter.LogRecord{
 				Namespace: ns,
 				Pod:       podName,
 				Container: container,
-				NodeName:  nodeName,
+				NodeName:  info.NodeName,
+				PodLabels: info.Labels,
 				Message:   line,
 			}
 			for _, sink := range c.sinks {

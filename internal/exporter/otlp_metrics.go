@@ -57,13 +57,16 @@ func (e *OTLPMetricsExporter) Export(ctx context.Context, req *colmetricspb.Expo
 func (e *OTLPMetricsExporter) Close() error { return nil }
 
 // NewScrapeMetricsRequest builds a minimal OTLP metrics payload for a single Prometheus scrape attempt.
-func NewScrapeMetricsRequest(namespace, pod, targetURL string, scrapeDuration time.Duration, responseBytes int64, success bool) *colmetricspb.ExportMetricsServiceRequest {
+func NewScrapeMetricsRequest(namespace, pod, nodeName, targetURL string, scrapeDuration time.Duration, responseBytes int64, success bool) *colmetricspb.ExportMetricsServiceRequest {
 	now := uint64(time.Now().UnixNano())
 	start := uint64(time.Now().Add(-scrapeDuration).UnixNano())
 	attrs := []*commonpb.KeyValue{
 		{Key: "k8s.namespace.name", Value: strValue(namespace)},
 		{Key: "k8s.pod.name", Value: strValue(pod)},
 		{Key: "target.url", Value: strValue(targetURL)},
+	}
+	if nodeName != "" {
+		attrs = append(attrs, &commonpb.KeyValue{Key: "k8s.node.name", Value: strValue(nodeName)})
 	}
 
 	successVal := 0.0

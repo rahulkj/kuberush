@@ -8,6 +8,7 @@ type LogRecord struct {
 	Pod       string
 	Container string
 	NodeName  string
+	PodLabels map[string]string
 	Message   string
 }
 
