@@ -60,7 +60,7 @@ helm upgrade --install kuberush deploy/helm/kuberush \
   --set config.features.logs=false
 ```
 
-> In node-log-tail mode, KubeRush reads container log files from the mounted host path (default `/var/log/pods`) instead of streaming via the Kubernetes API. This is typically deployed as a DaemonSet with a hostPath mount.
+> In node-log-tail mode, KubeRush reads container log files from the mounted host path (default `/var/log/pods`) instead of streaming via the Kubernetes API. This is typically deployed as a DaemonSet with a hostPath mount. Set `KUBERUSH_NODE_LOG_CHECKPOINT_PATH` to persist file offsets across restarts.
 
 ## Exporter configuration examples
 

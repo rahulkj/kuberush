@@ -248,11 +248,16 @@ func main() {
 			if root == "" {
 				root = "/var/log/pods"
 			}
-			nodeTailer := logs.NewNodeTailer(root, logSinks, sm, cfg.Kubernetes, cfg.Sharding, podWatcher)
+			checkpointPath := os.Getenv("KUBERUSH_NODE_LOG_CHECKPOINT_PATH")
+			nodeTailer := logs.NewNodeTailer(root, checkpointPath, logSinks, sm, cfg.Kubernetes, cfg.Sharding, podWatcher)
 			go func() {
 				_ = nodeTailer.Run(ctx)
 			}()
-			fmt.Printf("node log tail mode enabled (root=%s)\n", root)
+			if checkpointPath != "" {
+				fmt.Printf("node log tail mode enabled (root=%s checkpoint=%s)\n", root, checkpointPath)
+			} else {
+				fmt.Printf("node log tail mode enabled (root=%s)\n", root)
+			}
 		}
 		if cfg.Features.MetricsScrape {
 			metricsScraper := metrics.NewScraper(clientset, logSinks, metricsExporter, remoteWriteExporter, cfg.Kubernetes, cfg.Sharding, sm, cfg.Metrics)

@@ -3,6 +3,7 @@ package logs
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,30 +31,35 @@ type NodeTailPodLookup interface {
 }
 
 type NodeTailer struct {
-	root     string
-	sinks    []exporter.LogSink
-	metrics  *selfmetrics.Metrics
-	kubeCfg  config.KubernetesConfig
-	sharding config.ShardingConfig
-	lookup   NodeTailPodLookup
+	root           string
+	checkpointPath string
+	sinks          []exporter.LogSink
+	metrics        *selfmetrics.Metrics
+	kubeCfg        config.KubernetesConfig
+	sharding       config.ShardingConfig
+	lookup         NodeTailPodLookup
 
-	mu      sync.Mutex
-	offsets map[string]int64
+	mu       sync.Mutex
+	offsets  map[string]int64
+	lastSave time.Time
 }
 
-func NewNodeTailer(root string, sinks []exporter.LogSink, sm *selfmetrics.Metrics, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig, lookup NodeTailPodLookup) *NodeTailer {
+func NewNodeTailer(root, checkpointPath string, sinks []exporter.LogSink, sm *selfmetrics.Metrics, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig, lookup NodeTailPodLookup) *NodeTailer {
 	if root == "" {
 		root = "/var/log/pods"
 	}
-	return &NodeTailer{
-		root:     root,
-		sinks:    sinks,
-		metrics:  sm,
-		kubeCfg:  kubeCfg,
-		sharding: sharding,
-		lookup:   lookup,
-		offsets:  make(map[string]int64),
+	n := &NodeTailer{
+		root:           root,
+		checkpointPath: checkpointPath,
+		sinks:          sinks,
+		metrics:        sm,
+		kubeCfg:        kubeCfg,
+		sharding:       sharding,
+		lookup:         lookup,
+		offsets:        make(map[string]int64),
 	}
+	n.loadCheckpoints()
+	return n
 }
 
 func (n *NodeTailer) Run(ctx context.Context) error {
@@ -61,12 +67,63 @@ func (n *NodeTailer) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		n.scanOnce(ctx)
+		n.maybeSaveCheckpoints(false)
 		select {
 		case <-ctx.Done():
+			n.maybeSaveCheckpoints(true)
 			return nil
 		case <-ticker.C:
 		}
 	}
+}
+
+func (n *NodeTailer) loadCheckpoints() {
+	if n.checkpointPath == "" {
+		return
+	}
+	data, err := os.ReadFile(n.checkpointPath)
+	if err != nil {
+		return
+	}
+	var m map[string]int64
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	n.mu.Lock()
+	for k, v := range m {
+		n.offsets[k] = v
+	}
+	n.mu.Unlock()
+}
+
+func (n *NodeTailer) maybeSaveCheckpoints(force bool) {
+	if n.checkpointPath == "" {
+		return
+	}
+	n.mu.Lock()
+	if !force && time.Since(n.lastSave) < 10*time.Second {
+		n.mu.Unlock()
+		return
+	}
+	snapshot := make(map[string]int64, len(n.offsets))
+	for k, v := range n.offsets {
+		snapshot[k] = v
+	}
+	n.lastSave = time.Now()
+	n.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(n.checkpointPath), 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return
+	}
+	tmp := n.checkpointPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, n.checkpointPath)
 }
 
 func (n *NodeTailer) scanOnce(ctx context.Context) {
@@ -116,10 +173,10 @@ func (n *NodeTailer) tailFile(ctx context.Context, ns, podName, container, path 
 	n.mu.Lock()
 	off, seen := n.offsets[path]
 	if !seen || fi.Size() < off {
-		// start at end for existing files on first sight to avoid flooding historical logs
+		// start at end for files seen for the first time to avoid flooding historical logs
 		if !seen && fi.Size() > 0 {
 			off = fi.Size()
-		} else {
+		} else if !seen {
 			off = 0
 		}
 	}
