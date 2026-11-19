@@ -13,6 +13,8 @@ import (
 	"github.com/rahulkj/kubemon/internal/discovery"
 	"github.com/rahulkj/kubemon/internal/exporter"
 	"github.com/rahulkj/kubemon/internal/health"
+	"github.com/rahulkj/kubemon/internal/kube"
+	"github.com/rahulkj/kubemon/internal/logs"
 )
 
 func main() {
@@ -56,11 +58,13 @@ func main() {
 		fmt.Printf("exporter initialized: log sink=%s\n", s.Name())
 	}
 
-	// Start pod discovery (all namespaces)
-	pw, err := discovery.NewPodWatcher(kubeconfig)
+	// Build k8s client and start log collector + pod discovery
+	_, clientset, err := kube.BuildClientset(kubeconfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create pod watcher: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to build kube client: %v\n", err)
 	} else {
+		logCollector := logs.NewCollector(clientset, logSinks)
+		pw := discovery.NewPodWatcher(clientset, logCollector)
 		go func() {
 			if err := pw.Run(ctx); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "pod watcher error: %v\n", err)
