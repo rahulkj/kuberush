@@ -72,9 +72,9 @@ func main() {
 			}
 		}()
 		// Metrics scraper (minimal)
-		metricsScraper := metrics.NewScraper(clientset)
+		metricsScraper := metrics.NewScraper(clientset, logSinks)
 		go metricsScraper.Run(ctx)
-		fmt.Println("metrics scraper started (annotation-based, every 30s)")
+		fmt.Println("metrics scraper started (annotation-based, every 30s, shipping summaries to log sinks)")
 	}
 
 	<-ctx.Done()

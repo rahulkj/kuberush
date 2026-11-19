@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -29,20 +30,27 @@ func (s *Server) Start() error {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = w.Write([]byte("# KubeRush metrics placeholder\n"))
 	})
-	// Minimal OTLP/HTTP trace receiver stub
+	// OTLP/HTTP trace receiver (minimal)
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		// read and discard body (stub)
-		buf := make([]byte, 1024)
-		n, _ := r.Body.Read(buf)
-		for n > 0 {
-			n, _ = r.Body.Read(buf)
+		ct := r.Header.Get("Content-Type")
+		buf := make([]byte, 32*1024)
+		total := 0
+		for {
+			n, err := r.Body.Read(buf)
+			total += n
+			if err != nil {
+				break
+			}
 		}
 		_ = r.Body.Close()
+		fmt.Printf("[traces] received OTLP traces request content-type=%s bytes=%d\n", ct, total)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
 	})
 
 	s.srv = &http.Server{

@@ -9,14 +9,17 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/rahulkj/kubemon/internal/exporter"
 )
 
 type Scraper struct {
 	client kubernetes.Interface
+	sinks  []exporter.LogSink
 }
 
-func NewScraper(client kubernetes.Interface) *Scraper {
-	return &Scraper{client: client}
+func NewScraper(client kubernetes.Interface, sinks []exporter.LogSink) *Scraper {
+	return &Scraper{client: client, sinks: sinks}
 }
 
 func (s *Scraper) Run(ctx context.Context) {
@@ -72,8 +75,16 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		resp.Body.Close()
-		fmt.Printf("[metrics] scraped %s/%s (%d bytes)\n", pod.Namespace, pod.Name, len(body))
-		// TODO: parse and export metrics via sinks/exporters
-		_ = body
+		msg := fmt.Sprintf("[metrics] scraped %s/%s url=%s bytes=%d", pod.Namespace, pod.Name, url, len(body))
+		fmt.Println(msg)
+		rec := exporter.LogRecord{
+			Namespace: pod.Namespace,
+			Pod:       pod.Name,
+			Container: "metrics-scrape",
+			Message:   msg,
+		}
+		for _, sink := range s.sinks {
+			_ = sink.WriteLogs(ctx, []exporter.LogRecord{rec})
+		}
 	}
 }
