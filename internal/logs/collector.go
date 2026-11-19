@@ -12,21 +12,26 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/rahulkj/kubemon/internal/exporter"
+	"github.com/rahulkj/kubemon/internal/selfmetrics"
 )
 
 type Collector struct {
-	client kubernetes.Interface
-	sinks  []exporter.LogSink
+	client  kubernetes.Interface
+	sinks   []exporter.LogSink
+	metrics *selfmetrics.Metrics
 
-	mu      sync.Mutex
-	running map[string]context.CancelFunc // key: ns/pod/container
+	mu       sync.Mutex
+	running  map[string]context.CancelFunc // key: ns/pod/container
+	podNodes map[string]string             // key: ns/pod
 }
 
-func NewCollector(client kubernetes.Interface, sinks []exporter.LogSink) *Collector {
+func NewCollector(client kubernetes.Interface, sinks []exporter.LogSink, metrics *selfmetrics.Metrics) *Collector {
 	return &Collector{
-		client:  client,
-		sinks:   sinks,
-		running: make(map[string]context.CancelFunc),
+		client:   client,
+		sinks:    sinks,
+		metrics:  metrics,
+		running:  make(map[string]context.CancelFunc),
+		podNodes: make(map[string]string),
 	}
 }
 
@@ -34,7 +39,15 @@ func (c *Collector) key(ns, pod, container string) string {
 	return ns + "/" + pod + "/" + container
 }
 
+func (c *Collector) podKey(ns, pod string) string {
+	return ns + "/" + pod
+}
+
 func (c *Collector) HandlePod(pod *corev1.Pod) {
+	c.mu.Lock()
+	c.podNodes[c.podKey(pod.Namespace, pod.Name)] = pod.Spec.NodeName
+	c.mu.Unlock()
+
 	if pod.Status.Phase != corev1.PodRunning {
 		return
 	}
@@ -42,7 +55,7 @@ func (c *Collector) HandlePod(pod *corev1.Pod) {
 		if cs.State.Running == nil {
 			continue
 		}
-		c.startTailer(pod.Namespace, pod.Name, cs.Name)
+		c.startTailer(pod.Namespace, pod.Name, pod.Spec.NodeName, cs.Name)
 	}
 }
 
@@ -56,9 +69,10 @@ func (c *Collector) StopPod(ns, name string) {
 			delete(c.running, k)
 		}
 	}
+	delete(c.podNodes, c.podKey(ns, name))
 }
 
-func (c *Collector) startTailer(ns, podName, container string) {
+func (c *Collector) startTailer(ns, podName, nodeName, container string) {
 	k := c.key(ns, podName, container)
 	c.mu.Lock()
 	if _, exists := c.running[k]; exists {
@@ -91,6 +105,9 @@ func (c *Collector) tailContainer(ctx context.Context, ns, podName, container, k
 			return
 		}
 		if err != nil {
+			if c.metrics != nil {
+				c.metrics.IncLogTailerErrors()
+			}
 			fmt.Printf("[logtail] error %s/%s/%s: %v (retrying in 5s)\n", ns, podName, container, err)
 			select {
 			case <-ctx.Done():
@@ -120,14 +137,24 @@ func (c *Collector) streamLogs(ctx context.Context, ns, podName, container strin
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
+			c.mu.Lock()
+			nodeName := c.podNodes[c.podKey(ns, podName)]
+			c.mu.Unlock()
 			rec := exporter.LogRecord{
 				Namespace: ns,
 				Pod:       podName,
 				Container: container,
+				NodeName:  nodeName,
 				Message:   line,
 			}
 			for _, sink := range c.sinks {
-				_ = sink.WriteLogs(ctx, []exporter.LogRecord{rec})
+				if werr := sink.WriteLogs(ctx, []exporter.LogRecord{rec}); werr != nil {
+					if c.metrics != nil {
+						c.metrics.IncLogExportErrors(sink.Name())
+					}
+				} else if c.metrics != nil {
+					c.metrics.IncLogRecords(sink.Name(), 1)
+				}
 			}
 		}
 		if err != nil {

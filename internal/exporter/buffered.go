@@ -1,0 +1,118 @@
+package exporter
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+type BufferedLogSink struct {
+	next          LogSink
+	batchSize     int
+	flushInterval time.Duration
+	queue         chan LogRecord
+	stop          chan struct{}
+	done          chan struct{}
+	closeOnce     sync.Once
+	dropped       uint64
+	mu            sync.Mutex
+}
+
+func NewBufferedLogSink(next LogSink, batchSize int, flushInterval time.Duration, queueSize int) *BufferedLogSink {
+	if batchSize <= 0 {
+		batchSize = 200
+	}
+	if flushInterval <= 0 {
+		flushInterval = 2 * time.Second
+	}
+	if queueSize <= 0 {
+		queueSize = 10000
+	}
+	b := &BufferedLogSink{
+		next:          next,
+		batchSize:     batchSize,
+		flushInterval: flushInterval,
+		queue:         make(chan LogRecord, queueSize),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+	}
+	go b.run()
+	return b
+}
+
+func (b *BufferedLogSink) Name() string { return b.next.Name() + "+buffered" }
+
+func (b *BufferedLogSink) WriteLogs(ctx context.Context, records []LogRecord) error {
+	for _, r := range records {
+		select {
+		case b.queue <- r:
+		default:
+			b.mu.Lock()
+			b.dropped++
+			d := b.dropped
+			b.mu.Unlock()
+			if d == 1 || d%1000 == 0 {
+				fmt.Printf("[exporter:%s] dropping log records due to full queue (dropped=%d)\n", b.next.Name(), d)
+			}
+		}
+	}
+	return nil
+}
+
+func (b *BufferedLogSink) run() {
+	defer close(b.done)
+	ticker := time.NewTicker(b.flushInterval)
+	defer ticker.Stop()
+
+	batch := make([]LogRecord, 0, b.batchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		out := make([]LogRecord, len(batch))
+		copy(out, batch)
+		batch = batch[:0]
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = b.next.WriteLogs(ctx, out)
+		cancel()
+	}
+
+	for {
+		select {
+		case r, ok := <-b.queue:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, r)
+			if len(batch) >= b.batchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-b.stop:
+			for {
+				select {
+				case r := <-b.queue:
+					batch = append(batch, r)
+					if len(batch) >= b.batchSize {
+						flush()
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
+}
+
+func (b *BufferedLogSink) Close() error {
+	b.closeOnce.Do(func() {
+		close(b.stop)
+		<-b.done
+		_ = b.next.Close()
+	})
+	return nil
+}

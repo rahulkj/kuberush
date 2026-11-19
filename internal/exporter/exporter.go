@@ -2,11 +2,12 @@ package exporter
 
 import "context"
 
-// LogRecord is a minimal placeholder for a normalized log event.
+// LogRecord is a normalized log event with Kubernetes metadata.
 type LogRecord struct {
 	Namespace string
 	Pod       string
 	Container string
+	NodeName  string
 	Message   string
 }
 

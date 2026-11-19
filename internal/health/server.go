@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/rahulkj/kubemon/internal/selfmetrics"
 )
 
 type Server struct {
@@ -16,16 +18,18 @@ type Server struct {
 	tracesEndpoint  string
 	metricsEnabled  bool
 	metricsEndpoint string
+	metrics         *selfmetrics.Metrics
 	srv             *http.Server
 }
 
-func NewServer(addr string, tracesEnabled bool, tracesEndpoint string, metricsEnabled bool, metricsEndpoint string) *Server {
+func NewServer(addr string, tracesEnabled bool, tracesEndpoint string, metricsEnabled bool, metricsEndpoint string, metrics *selfmetrics.Metrics) *Server {
 	return &Server{
 		addr:            addr,
 		tracesEnabled:   tracesEnabled,
 		tracesEndpoint:  tracesEndpoint,
 		metricsEnabled:  metricsEnabled,
 		metricsEndpoint: metricsEndpoint,
+		metrics:         metrics,
 	}
 }
 
@@ -40,8 +44,12 @@ func (s *Server) Start() error {
 		_, _ = w.Write([]byte("ready"))
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		_, _ = w.Write([]byte("# KubeRush metrics placeholder\n"))
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		if s.metrics != nil {
+			_, _ = w.Write([]byte(s.metrics.RenderPrometheus()))
+			return
+		}
+		_, _ = w.Write([]byte("# KubeRush metrics\n"))
 	})
 	// OTLP/HTTP trace receiver + optional forward
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
@@ -57,12 +65,18 @@ func (s *Server) Start() error {
 			return
 		}
 		fmt.Printf("[traces] received OTLP traces request content-type=%s bytes=%d\n", ct, len(body))
+		if s.metrics != nil {
+			s.metrics.IncOTLPIngest("traces")
+		}
 		if s.tracesEnabled && s.tracesEndpoint != "" {
 			go func(data []byte, contentType string) {
 				url := strings.TrimRight(s.tracesEndpoint, "/") + "/v1/traces"
 				req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 				if err != nil {
 					fmt.Printf("[traces] forward create request error: %v\n", err)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("traces")
+					}
 					return
 				}
 				if contentType != "" {
@@ -72,11 +86,17 @@ func (s *Server) Start() error {
 				resp, err := client.Do(req)
 				if err != nil {
 					fmt.Printf("[traces] forward error: %v\n", err)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("traces")
+					}
 					return
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode >= 300 {
 					fmt.Printf("[traces] forward failed status: %s\n", resp.Status)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("traces")
+					}
 				}
 			}(body, ct)
 		}
@@ -99,12 +119,18 @@ func (s *Server) Start() error {
 			return
 		}
 		fmt.Printf("[metrics] received OTLP metrics request content-type=%s bytes=%d\n", ct, len(body))
+		if s.metrics != nil {
+			s.metrics.IncOTLPIngest("metrics")
+		}
 		if s.metricsEnabled && s.metricsEndpoint != "" {
 			go func(data []byte, contentType string) {
 				url := strings.TrimRight(s.metricsEndpoint, "/") + "/v1/metrics"
 				req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 				if err != nil {
 					fmt.Printf("[metrics] forward create request error: %v\n", err)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("metrics")
+					}
 					return
 				}
 				if contentType != "" {
@@ -114,11 +140,17 @@ func (s *Server) Start() error {
 				resp, err := client.Do(req)
 				if err != nil {
 					fmt.Printf("[metrics] forward error: %v\n", err)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("metrics")
+					}
 					return
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode >= 300 {
 					fmt.Printf("[metrics] forward failed status: %s\n", resp.Status)
+					if s.metrics != nil {
+						s.metrics.IncOTLPForwardError("metrics")
+					}
 				}
 			}(body, ct)
 		}

@@ -34,20 +34,24 @@ func (e *OTLPLogsExporter) WriteLogs(ctx context.Context, records []LogRecord) e
 	}
 	// Build a simple OTLP logs payload
 	scopeLogs := &logspb.ScopeLogs{
-		Scope: &commonpb.InstrumentationScope{Name: "kuberush"},
+		Scope:      &commonpb.InstrumentationScope{Name: "kuberush"},
 		LogRecords: []*logspb.LogRecord{},
 	}
 	for _, r := range records {
+		attrs := []*commonpb.KeyValue{
+			{Key: "k8s.namespace.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Namespace}}},
+			{Key: "k8s.pod.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Pod}}},
+			{Key: "k8s.container.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Container}}},
+		}
+		if r.NodeName != "" {
+			attrs = append(attrs, &commonpb.KeyValue{Key: "k8s.node.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.NodeName}}})
+		}
 		lr := &logspb.LogRecord{
 			TimeUnixNano: uint64(time.Now().UnixNano()),
 			Body: &commonpb.AnyValue{
 				Value: &commonpb.AnyValue_StringValue{StringValue: r.Message},
 			},
-			Attributes: []*commonpb.KeyValue{
-				{Key: "k8s.namespace.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Namespace}}},
-				{Key: "k8s.pod.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Pod}}},
-				{Key: "k8s.container.name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Container}}},
-			},
+			Attributes: attrs,
 		}
 		scopeLogs.LogRecords = append(scopeLogs.LogRecords, lr)
 	}

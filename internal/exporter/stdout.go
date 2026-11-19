@@ -16,7 +16,11 @@ func (s *StdoutLogSink) Name() string { return "stdout" }
 
 func (s *StdoutLogSink) WriteLogs(ctx context.Context, records []LogRecord) error {
 	for _, r := range records {
-		_, _ = fmt.Fprintf(os.Stdout, "[log][%s/%s/%s] %s\n", r.Namespace, r.Pod, r.Container, r.Message)
+		if r.NodeName != "" {
+			_, _ = fmt.Fprintf(os.Stdout, "[log][%s/%s/%s node=%s] %s\n", r.Namespace, r.Pod, r.Container, r.NodeName, r.Message)
+		} else {
+			_, _ = fmt.Fprintf(os.Stdout, "[log][%s/%s/%s] %s\n", r.Namespace, r.Pod, r.Container, r.Message)
+		}
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 type HealthConfig struct {
@@ -33,9 +34,62 @@ type ExportersConfig struct {
 	OTLPMetrics OTLPMetricsExporterConfig `yaml:"otlp_metrics"`
 }
 
+type NamespacesConfig struct {
+	Include []string `yaml:"include"`
+	Exclude []string `yaml:"exclude"`
+}
+
+type KubernetesConfig struct {
+	Namespaces    NamespacesConfig `yaml:"namespaces"`
+	LabelSelector string           `yaml:"label_selector"`
+}
+
+func (k KubernetesConfig) NamespaceAllowed(ns string) bool {
+	if len(k.Namespaces.Include) > 0 {
+		found := false
+		for _, n := range k.Namespaces.Include {
+			if n == ns {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, n := range k.Namespaces.Exclude {
+		if n == ns {
+			return false
+		}
+	}
+	return true
+}
+
+func (k KubernetesConfig) PodAllowed(ns string, podLabels map[string]string) bool {
+	if !k.NamespaceAllowed(ns) {
+		return false
+	}
+	if k.LabelSelector == "" {
+		return true
+	}
+	sel, err := labels.Parse(k.LabelSelector)
+	if err != nil {
+		return true
+	}
+	return sel.Matches(labels.Set(podLabels))
+}
+
+type LogPipelineConfig struct {
+	BatchSize       int `yaml:"batch_size"`
+	FlushIntervalMS int `yaml:"flush_interval_ms"`
+	QueueSize       int `yaml:"queue_size"`
+}
+
 type Config struct {
-	Health    HealthConfig    `yaml:"health"`
-	Exporters ExportersConfig `yaml:"exporters"`
+	Health      HealthConfig      `yaml:"health"`
+	Exporters   ExportersConfig   `yaml:"exporters"`
+	Kubernetes  KubernetesConfig  `yaml:"kubernetes"`
+	LogPipeline LogPipelineConfig `yaml:"log_pipeline"`
 }
 
 func Default() *Config {
@@ -57,6 +111,14 @@ func Default() *Config {
 				Enabled:  false,
 				Endpoint: "http://localhost:4318",
 			},
+		},
+		Kubernetes: KubernetesConfig{
+			Namespaces: NamespacesConfig{},
+		},
+		LogPipeline: LogPipelineConfig{
+			BatchSize:       200,
+			FlushIntervalMS: 2000,
+			QueueSize:       10000,
 		},
 	}
 }

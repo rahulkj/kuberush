@@ -8,9 +8,9 @@
 - Cluster-wide pod/container discovery via Kubernetes API (informers), all namespaces (with filters).
 - **Logs:** stream container logs (Kubernetes API follow) with K8s metadata enrichment.
 - **Metrics:** annotation-driven Prometheus endpoint scraping with enrichment and OTLP metrics ingestion/export support.
-- **Traces:** OTLP receiver + enrichment + export (planned).
-- **Exporters:** pluggable sinks (OTLP, Prometheus Remote Write, Loki/ES/Splunk/Cloud providers, etc.) with batching, compression, and backpressure controls.
-- **Ops:** single static Go binary, health/metrics endpoints, RBAC examples.
+- **Traces:** OTLP/HTTP receiver with optional forwarding (enrichment/export pipeline planned).
+- **Exporters:** stdout and OTLP (logs/metrics/traces forwarding) sinks with buffered batching for log export; additional backends and compression/backpressure policies planned.
+- **Ops:** single static Go binary, health endpoint, Prometheus-format KubeRush self-metrics (`/metrics`), namespace/label filtering, and RBAC examples.
 
 ## Documentation
 - ADR: [`docs/adr/0001-kuberush-initial-architecture.md`](docs/adr/0001-kuberush-initial-architecture.md)

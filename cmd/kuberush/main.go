@@ -16,6 +16,7 @@ import (
 	"github.com/rahulkj/kubemon/internal/kube"
 	"github.com/rahulkj/kubemon/internal/logs"
 	"github.com/rahulkj/kubemon/internal/metrics"
+	"github.com/rahulkj/kubemon/internal/selfmetrics"
 )
 
 func main() {
@@ -34,6 +35,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	sm := selfmetrics.New()
+
 	// Start health/metrics HTTP server (also OTLP traces/metrics receiver)
 	hSrv := health.NewServer(
 		cfg.Health.ListenAddress,
@@ -41,6 +44,7 @@ func main() {
 		cfg.Exporters.OTLPTraces.Endpoint,
 		cfg.Exporters.OTLPMetrics.Enabled,
 		cfg.Exporters.OTLPMetrics.Endpoint,
+		sm,
 	)
 	go func() {
 		if err := hSrv.Start(); err != nil {
@@ -51,18 +55,22 @@ func main() {
 	fmt.Printf("kuberush starting (health on %s)\n", cfg.Health.ListenAddress)
 
 	// Exporter pipeline (ADR 0001): configure sinks
-	var logSinks []exporter.LogSink
+	var baseSinks []exporter.LogSink
 	if cfg.Exporters.Stdout {
-		logSinks = append(logSinks, exporter.NewStdoutLogSink())
+		baseSinks = append(baseSinks, exporter.NewStdoutLogSink())
 	}
 	if cfg.Exporters.OTLPLogs.Enabled {
-		logSinks = append(logSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint))
+		baseSinks = append(baseSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint))
 	}
-	if len(logSinks) == 0 {
-		logSinks = append(logSinks, exporter.NewStdoutLogSink()) // default fallback
+	if len(baseSinks) == 0 {
+		baseSinks = append(baseSinks, exporter.NewStdoutLogSink()) // default fallback
 	}
-	for _, s := range logSinks {
-		fmt.Printf("exporter initialized: log sink=%s\n", s.Name())
+	var logSinks []exporter.LogSink
+	flushInterval := time.Duration(cfg.LogPipeline.FlushIntervalMS) * time.Millisecond
+	for _, s := range baseSinks {
+		bs := exporter.NewBufferedLogSink(s, cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize)
+		logSinks = append(logSinks, bs)
+		fmt.Printf("exporter initialized: log sink=%s (buffered batch=%d flush=%s queue=%d)\n", s.Name(), cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize)
 	}
 
 	var metricsExporter *exporter.OTLPMetricsExporter
@@ -76,15 +84,15 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build kube client: %v\n", err)
 	} else {
-		logCollector := logs.NewCollector(clientset, logSinks)
-		pw := discovery.NewPodWatcher(clientset, logCollector)
+		logCollector := logs.NewCollector(clientset, logSinks, sm)
+		pw := discovery.NewPodWatcher(clientset, logCollector, cfg.Kubernetes)
 		go func() {
 			if err := pw.Run(ctx); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "pod watcher error: %v\n", err)
 			}
 		}()
 		// Metrics scraper (minimal)
-		metricsScraper := metrics.NewScraper(clientset, logSinks, metricsExporter)
+		metricsScraper := metrics.NewScraper(clientset, logSinks, metricsExporter, cfg.Kubernetes, sm)
 		go metricsScraper.Run(ctx)
 		if metricsExporter != nil {
 			fmt.Println("metrics scraper started (annotation-based, every 30s, exporting scrape metrics via OTLP and summaries to log sinks)")

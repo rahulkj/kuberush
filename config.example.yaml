@@ -14,11 +14,17 @@ exporters:
     enabled: false
     endpoint: "http://localhost:4318"
 
+kubernetes:
+  namespaces:
+    include: []
+    exclude: []
+  label_selector: ""
+
+log_pipeline:
+  batch_size: 200
+  flush_interval_ms: 2000
+  queue_size: 10000
+
 # Future sections (planned):
-# kubernetes:
-#   kubeconfig: ""
-#   namespaces:
-#     include: []
-#     exclude: []
 # logging:
 #   level: info
