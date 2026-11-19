@@ -62,6 +62,9 @@ func main() {
 	if cfg.Exporters.OTLPLogs.Enabled {
 		baseSinks = append(baseSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint))
 	}
+	if cfg.Exporters.Loki.Enabled {
+		baseSinks = append(baseSinks, exporter.NewLokiLogsExporter(cfg.Exporters.Loki.Endpoint))
+	}
 	if len(baseSinks) == 0 {
 		baseSinks = append(baseSinks, exporter.NewStdoutLogSink()) // default fallback
 	}

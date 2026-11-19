@@ -13,6 +13,9 @@ exporters:
   otlp_metrics:
     enabled: false
     endpoint: "http://localhost:4318"
+  loki:
+    enabled: false
+    endpoint: "http://localhost:3100"
 
 kubernetes:
   namespaces:

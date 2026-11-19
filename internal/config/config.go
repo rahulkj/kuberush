@@ -27,11 +27,17 @@ type OTLPMetricsExporterConfig struct {
 	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
 }
 
+type LokiExporterConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:3100
+}
+
 type ExportersConfig struct {
 	Stdout      bool                      `yaml:"stdout"`
 	OTLPLogs    OTLPLogsExporterConfig    `yaml:"otlp_logs"`
 	OTLPTraces  OTLPTracesExporterConfig  `yaml:"otlp_traces"`
 	OTLPMetrics OTLPMetricsExporterConfig `yaml:"otlp_metrics"`
+	Loki        LokiExporterConfig        `yaml:"loki"`
 }
 
 type NamespacesConfig struct {
@@ -111,6 +117,10 @@ func Default() *Config {
 				Enabled:  false,
 				Endpoint: "http://localhost:4318",
 			},
+			Loki: LokiExporterConfig{
+				Enabled:  false,
+				Endpoint: "http://localhost:3100",
+			},
 		},
 		Kubernetes: KubernetesConfig{
 			Namespaces: NamespacesConfig{},
@@ -152,6 +162,12 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("KUBERUSH_OTLP_METRICS_ENDPOINT"); v != "" {
 		cfg.Exporters.OTLPMetrics.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_LOKI_ENABLED"); v == "true" || v == "1" {
+		cfg.Exporters.Loki.Enabled = true
+	}
+	if v := os.Getenv("KUBERUSH_LOKI_ENDPOINT"); v != "" {
+		cfg.Exporters.Loki.Endpoint = v
 	}
 	return cfg, nil
 }

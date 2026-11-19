@@ -71,6 +71,10 @@ spec:
               value: "false"
             - name: KUBERUSH_OTLP_METRICS_ENDPOINT
               value: "http://otel-collector:4318"
+            - name: KUBERUSH_LOKI_ENABLED
+              value: "false"
+            - name: KUBERUSH_LOKI_ENDPOINT
+              value: "http://loki:3100"
           readinessProbe:
             httpGet:
               path: /readyz

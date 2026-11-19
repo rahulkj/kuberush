@@ -73,9 +73,21 @@ func (b *BufferedLogSink) run() {
 		out := make([]LogRecord, len(batch))
 		copy(out, batch)
 		batch = batch[:0]
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = b.next.WriteLogs(ctx, out)
-		cancel()
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err = b.next.WriteLogs(ctx, out)
+			cancel()
+			if err == nil {
+				return
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			}
+		}
+		if err != nil {
+			fmt.Printf("[exporter:%s] flush error after retries: %v\n", b.next.Name(), err)
+		}
 	}
 
 	for {
