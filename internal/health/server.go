@@ -10,23 +10,22 @@ import (
 	"time"
 
 	"github.com/rahulkj/kubemon/internal/selfmetrics"
+	"github.com/rahulkj/kubemon/internal/traces"
 )
 
 type Server struct {
 	addr            string
-	tracesEnabled   bool
-	tracesEndpoint  string
+	traceProcessor  *traces.Processor
 	metricsEnabled  bool
 	metricsEndpoint string
 	metrics         *selfmetrics.Metrics
 	srv             *http.Server
 }
 
-func NewServer(addr string, tracesEnabled bool, tracesEndpoint string, metricsEnabled bool, metricsEndpoint string, metrics *selfmetrics.Metrics) *Server {
+func NewServer(addr string, traceProcessor *traces.Processor, metricsEnabled bool, metricsEndpoint string, metrics *selfmetrics.Metrics) *Server {
 	return &Server{
 		addr:            addr,
-		tracesEnabled:   tracesEnabled,
-		tracesEndpoint:  tracesEndpoint,
+		traceProcessor:  traceProcessor,
 		metricsEnabled:  metricsEnabled,
 		metricsEndpoint: metricsEndpoint,
 		metrics:         metrics,
@@ -51,7 +50,7 @@ func (s *Server) Start() error {
 		}
 		_, _ = w.Write([]byte("# KubeRush metrics\n"))
 	})
-	// OTLP/HTTP trace receiver + optional forward
+	// OTLP/HTTP trace receiver + enrichment/export pipeline
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -68,35 +67,12 @@ func (s *Server) Start() error {
 		if s.metrics != nil {
 			s.metrics.IncOTLPIngest("traces")
 		}
-		if s.tracesEnabled && s.tracesEndpoint != "" {
+		if s.traceProcessor != nil {
 			go func(data []byte, contentType string) {
-				url := strings.TrimRight(s.tracesEndpoint, "/") + "/v1/traces"
-				req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
-				if err != nil {
-					fmt.Printf("[traces] forward create request error: %v\n", err)
-					if s.metrics != nil {
-						s.metrics.IncOTLPForwardError("traces")
-					}
-					return
-				}
-				if contentType != "" {
-					req.Header.Set("Content-Type", contentType)
-				}
-				client := &http.Client{Timeout: 10 * time.Second}
-				resp, err := client.Do(req)
-				if err != nil {
-					fmt.Printf("[traces] forward error: %v\n", err)
-					if s.metrics != nil {
-						s.metrics.IncOTLPForwardError("traces")
-					}
-					return
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode >= 300 {
-					fmt.Printf("[traces] forward failed status: %s\n", resp.Status)
-					if s.metrics != nil {
-						s.metrics.IncOTLPForwardError("traces")
-					}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := s.traceProcessor.Handle(ctx, data, contentType); err != nil {
+					fmt.Printf("[traces] process/export error: %v\n", err)
 				}
 			}(body, ct)
 		}

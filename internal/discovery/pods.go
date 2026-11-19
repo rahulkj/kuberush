@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/rahulkj/kubemon/internal/config"
@@ -24,6 +25,7 @@ type PodHandler interface {
 type PodWatcher struct {
 	clientset kubernetes.Interface
 	factory   informers.SharedInformerFactory
+	lister    corelisters.PodLister
 	handler   PodHandler
 	kubeCfg   config.KubernetesConfig
 }
@@ -39,7 +41,51 @@ func NewPodWatcher(clientset kubernetes.Interface, handler PodHandler, kubeCfg c
 		}
 	}
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 30*time.Second, opts...)
-	return &PodWatcher{clientset: clientset, factory: factory, handler: handler, kubeCfg: kubeCfg}
+	return &PodWatcher{
+		clientset: clientset,
+		factory:   factory,
+		lister:    factory.Core().V1().Pods().Lister(),
+		handler:   handler,
+		kubeCfg:   kubeCfg,
+	}
+}
+
+func (pw *PodWatcher) Lookup(namespace, name string) (*corev1.Pod, bool) {
+	if pw.lister == nil || namespace == "" || name == "" {
+		return nil, false
+	}
+	pod, err := pw.lister.Pods(namespace).Get(name)
+	if err != nil || pod == nil {
+		return nil, false
+	}
+	if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+		return nil, false
+	}
+	return pod, true
+}
+
+func (pw *PodWatcher) LookupByIP(ip string) (*corev1.Pod, bool) {
+	if pw.lister == nil || ip == "" {
+		return nil, false
+	}
+	pods, err := pw.lister.List(labels.Everything())
+	if err != nil {
+		return nil, false
+	}
+	for _, pod := range pods {
+		if pod == nil || !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+			continue
+		}
+		if pod.Status.PodIP == ip {
+			return pod, true
+		}
+		for _, pip := range pod.Status.PodIPs {
+			if pip.IP == ip {
+				return pod, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (pw *PodWatcher) Run(ctx context.Context) error {

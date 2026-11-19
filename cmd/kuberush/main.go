@@ -17,6 +17,7 @@ import (
 	"github.com/rahulkj/kubemon/internal/logs"
 	"github.com/rahulkj/kubemon/internal/metrics"
 	"github.com/rahulkj/kubemon/internal/selfmetrics"
+	"github.com/rahulkj/kubemon/internal/traces"
 )
 
 func main() {
@@ -36,23 +37,6 @@ func main() {
 	defer stop()
 
 	sm := selfmetrics.New()
-
-	// Start health/metrics HTTP server (also OTLP traces/metrics receiver)
-	hSrv := health.NewServer(
-		cfg.Health.ListenAddress,
-		cfg.Exporters.OTLPTraces.Enabled,
-		cfg.Exporters.OTLPTraces.Endpoint,
-		cfg.Exporters.OTLPMetrics.Enabled,
-		cfg.Exporters.OTLPMetrics.Endpoint,
-		sm,
-	)
-	go func() {
-		if err := hSrv.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "health server error: %v\n", err)
-		}
-	}()
-
-	fmt.Printf("kuberush starting (health on %s)\n", cfg.Health.ListenAddress)
 
 	// Exporter pipeline (ADR 0001): configure sinks
 	var baseSinks []exporter.LogSink
@@ -82,15 +66,54 @@ func main() {
 		fmt.Printf("exporter initialized: metrics sink=%s\n", metricsExporter.Name())
 	}
 
-	// Build k8s client and start log collector + pod discovery
+	// Build k8s client and optional components (discovery/logs/metrics scrape/trace enrichment)
+	var podWatcher *discovery.PodWatcher
 	_, clientset, err := kube.BuildClientset(kubeconfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build kube client: %v\n", err)
 	} else {
 		logCollector := logs.NewCollector(clientset, logSinks, sm)
-		pw := discovery.NewPodWatcher(clientset, logCollector, cfg.Kubernetes)
+		podWatcher = discovery.NewPodWatcher(clientset, logCollector, cfg.Kubernetes)
+	}
+
+	var traceProcessor *traces.Processor
+	if cfg.Exporters.OTLPTraces.Enabled || cfg.Exporters.OTLPTraces.Endpoint != "" {
+		var enricher *traces.Enricher
+		if podWatcher != nil {
+			enricher = traces.NewEnricher(podWatcher)
+		}
+		var traceExporter *exporter.OTLPTracesExporter
+		if cfg.Exporters.OTLPTraces.Enabled {
+			traceExporter = exporter.NewOTLPTracesExporter(cfg.Exporters.OTLPTraces.Endpoint)
+			fmt.Printf("exporter initialized: traces sink=%s\n", traceExporter.Name())
+		}
+		traceProcessor = traces.NewProcessor(enricher, traceExporter, cfg.Exporters.OTLPTraces.Endpoint, sm)
+		if enricher != nil {
+			fmt.Println("traces pipeline enabled (OTLP HTTP ingest -> k8s enrichment -> export)")
+		} else {
+			fmt.Println("traces pipeline enabled (OTLP HTTP ingest -> export/forward)")
+		}
+	}
+
+	// Start health/metrics HTTP server (also OTLP traces/metrics receiver)
+	hSrv := health.NewServer(
+		cfg.Health.ListenAddress,
+		traceProcessor,
+		cfg.Exporters.OTLPMetrics.Enabled,
+		cfg.Exporters.OTLPMetrics.Endpoint,
+		sm,
+	)
+	go func() {
+		if err := hSrv.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "health server error: %v\n", err)
+		}
+	}()
+
+	fmt.Printf("kuberush starting (health on %s)\n", cfg.Health.ListenAddress)
+
+	if clientset != nil && podWatcher != nil {
 		go func() {
-			if err := pw.Run(ctx); err != nil && ctx.Err() == nil {
+			if err := podWatcher.Run(ctx); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "pod watcher error: %v\n", err)
 			}
 		}()
@@ -110,6 +133,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = hSrv.Shutdown(shutdownCtx)
+	if traceProcessor != nil {
+		_ = traceProcessor.Close()
+	}
 	for _, s := range logSinks {
 		_ = s.Close()
 	}
