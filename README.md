@@ -7,7 +7,7 @@
 ## What it does (target)
 - Cluster-wide pod/container discovery via Kubernetes API (informers), all namespaces (with filters).
 - **Logs:** stream container logs (Kubernetes API follow) with K8s metadata enrichment.
-- **Metrics:** annotation-driven Prometheus endpoint scraping with enrichment (OTLP ingestion planned).
+- **Metrics:** annotation-driven Prometheus endpoint scraping with enrichment and OTLP metrics ingestion/export support.
 - **Traces:** OTLP receiver + enrichment + export (planned).
 - **Exporters:** pluggable sinks (OTLP, Prometheus Remote Write, Loki/ES/Splunk/Cloud providers, etc.) with batching, compression, and backpressure controls.
 - **Ops:** single static Go binary, health/metrics endpoints, RBAC examples.

@@ -10,6 +10,9 @@ exporters:
   otlp_traces:
     enabled: false
     endpoint: "http://localhost:4318"
+  otlp_metrics:
+    enabled: false
+    endpoint: "http://localhost:4318"
 
 # Future sections (planned):
 # kubernetes:

@@ -34,8 +34,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Start health/metrics HTTP server (also OTLP traces receiver)
-	hSrv := health.NewServer(cfg.Health.ListenAddress, cfg.Exporters.OTLPTraces.Enabled, cfg.Exporters.OTLPTraces.Endpoint)
+	// Start health/metrics HTTP server (also OTLP traces/metrics receiver)
+	hSrv := health.NewServer(
+		cfg.Health.ListenAddress,
+		cfg.Exporters.OTLPTraces.Enabled,
+		cfg.Exporters.OTLPTraces.Endpoint,
+		cfg.Exporters.OTLPMetrics.Enabled,
+		cfg.Exporters.OTLPMetrics.Endpoint,
+	)
 	go func() {
 		if err := hSrv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "health server error: %v\n", err)
@@ -59,6 +65,12 @@ func main() {
 		fmt.Printf("exporter initialized: log sink=%s\n", s.Name())
 	}
 
+	var metricsExporter *exporter.OTLPMetricsExporter
+	if cfg.Exporters.OTLPMetrics.Enabled {
+		metricsExporter = exporter.NewOTLPMetricsExporter(cfg.Exporters.OTLPMetrics.Endpoint)
+		fmt.Printf("exporter initialized: metrics sink=%s\n", metricsExporter.Name())
+	}
+
 	// Build k8s client and start log collector + pod discovery
 	_, clientset, err := kube.BuildClientset(kubeconfig)
 	if err != nil {
@@ -72,9 +84,13 @@ func main() {
 			}
 		}()
 		// Metrics scraper (minimal)
-		metricsScraper := metrics.NewScraper(clientset, logSinks)
+		metricsScraper := metrics.NewScraper(clientset, logSinks, metricsExporter)
 		go metricsScraper.Run(ctx)
-		fmt.Println("metrics scraper started (annotation-based, every 30s, shipping summaries to log sinks)")
+		if metricsExporter != nil {
+			fmt.Println("metrics scraper started (annotation-based, every 30s, exporting scrape metrics via OTLP and summaries to log sinks)")
+		} else {
+			fmt.Println("metrics scraper started (annotation-based, every 30s, shipping summaries to log sinks)")
+		}
 	}
 
 	<-ctx.Done()
@@ -85,6 +101,9 @@ func main() {
 	_ = hSrv.Shutdown(shutdownCtx)
 	for _, s := range logSinks {
 		_ = s.Close()
+	}
+	if metricsExporter != nil {
+		_ = metricsExporter.Close()
 	}
 
 	fmt.Println("kuberush stopped")

@@ -21,10 +21,16 @@ type OTLPTracesExporterConfig struct {
 	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
 }
 
+type OTLPMetricsExporterConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
+}
+
 type ExportersConfig struct {
-	Stdout     bool                    `yaml:"stdout"`
-	OTLPLogs   OTLPLogsExporterConfig  `yaml:"otlp_logs"`
-	OTLPTraces OTLPTracesExporterConfig `yaml:"otlp_traces"`
+	Stdout      bool                      `yaml:"stdout"`
+	OTLPLogs    OTLPLogsExporterConfig    `yaml:"otlp_logs"`
+	OTLPTraces  OTLPTracesExporterConfig  `yaml:"otlp_traces"`
+	OTLPMetrics OTLPMetricsExporterConfig `yaml:"otlp_metrics"`
 }
 
 type Config struct {
@@ -44,6 +50,10 @@ func Default() *Config {
 				Endpoint: "http://localhost:4318",
 			},
 			OTLPTraces: OTLPTracesExporterConfig{
+				Enabled:  false,
+				Endpoint: "http://localhost:4318",
+			},
+			OTLPMetrics: OTLPMetricsExporterConfig{
 				Enabled:  false,
 				Endpoint: "http://localhost:4318",
 			},
@@ -74,6 +84,12 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("KUBERUSH_OTLP_TRACES_ENDPOINT"); v != "" {
 		cfg.Exporters.OTLPTraces.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_OTLP_METRICS_ENABLED"); v == "true" || v == "1" {
+		cfg.Exporters.OTLPMetrics.Enabled = true
+	}
+	if v := os.Getenv("KUBERUSH_OTLP_METRICS_ENDPOINT"); v != "" {
+		cfg.Exporters.OTLPMetrics.Endpoint = v
 	}
 	return cfg, nil
 }

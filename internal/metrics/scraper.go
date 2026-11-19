@@ -14,12 +14,13 @@ import (
 )
 
 type Scraper struct {
-	client kubernetes.Interface
-	sinks  []exporter.LogSink
+	client          kubernetes.Interface
+	sinks           []exporter.LogSink
+	metricsExporter *exporter.OTLPMetricsExporter
 }
 
-func NewScraper(client kubernetes.Interface, sinks []exporter.LogSink) *Scraper {
-	return &Scraper{client: client, sinks: sinks}
+func NewScraper(client kubernetes.Interface, sinks []exporter.LogSink, metricsExporter *exporter.OTLPMetricsExporter) *Scraper {
+	return &Scraper{client: client, sinks: sinks, metricsExporter: metricsExporter}
 }
 
 func (s *Scraper) Run(ctx context.Context) {
@@ -68,9 +69,15 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		start := time.Now()
 		resp, err := client.Do(req)
+		duration := time.Since(start)
 		if err != nil {
 			fmt.Printf("[metrics] scrape %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+			if s.metricsExporter != nil {
+				mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, url, duration, 0, false)
+				_ = s.metricsExporter.Export(ctx, mreq)
+			}
 			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
@@ -85,6 +92,10 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 		}
 		for _, sink := range s.sinks {
 			_ = sink.WriteLogs(ctx, []exporter.LogRecord{rec})
+		}
+		if s.metricsExporter != nil {
+			mreq := exporter.NewScrapeMetricsRequest(pod.Namespace, pod.Name, url, duration, int64(len(body)), resp.StatusCode < 300)
+			_ = s.metricsExporter.Export(ctx, mreq)
 		}
 	}
 }
