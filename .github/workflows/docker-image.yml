@@ -36,6 +36,17 @@ jobs:
           EOF
           echo "DOCKER_CONFIG=${AUTH_DIR}" >> "${GITHUB_ENV}"
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries (cross-compile)
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/kuberush-linux-amd64 ./cmd/kuberush
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/kuberush-linux-arm64 ./cmd/kuberush
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
