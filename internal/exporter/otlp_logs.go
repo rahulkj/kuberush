@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -15,14 +16,16 @@ import (
 )
 
 type OTLPLogsExporter struct {
-	endpoint string
-	client   *http.Client
+	endpoint    string
+	compression string
+	client      *http.Client
 }
 
-func NewOTLPLogsExporter(endpoint string) *OTLPLogsExporter {
+func NewOTLPLogsExporter(endpoint, compression string) *OTLPLogsExporter {
 	return &OTLPLogsExporter{
-		endpoint: endpoint,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		endpoint:    endpoint,
+		compression: compression,
+		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -78,11 +81,18 @@ func (e *OTLPLogsExporter) WriteLogs(ctx context.Context, records []LogRecord) e
 		return fmt.Errorf("marshal otlp logs proto: %w", err)
 	}
 	url := e.endpoint + "/v1/logs"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	body, encoding, err := maybeGzip(data, e.compression)
+	if err != nil {
+		return fmt.Errorf("compress otlp logs: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	if encoding != "" {
+		httpReq.Header.Set("Content-Encoding", encoding)
+	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("post otlp logs: %w", err)
@@ -95,3 +105,19 @@ func (e *OTLPLogsExporter) WriteLogs(ctx context.Context, records []LogRecord) e
 }
 
 func (e *OTLPLogsExporter) Close() error { return nil }
+
+func maybeGzip(data []byte, compression string) ([]byte, string, error) {
+	if compression != "gzip" {
+		return data, "", nil
+	}
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		_ = zw.Close()
+		return nil, "", err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), "gzip", nil
+}

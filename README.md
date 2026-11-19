@@ -9,12 +9,14 @@
 - **Logs:** stream container logs (Kubernetes API follow) with K8s metadata enrichment.
 - **Metrics:** annotation-driven Prometheus endpoint scraping with enrichment and OTLP metrics ingestion/export support (including conversion of scraped Prometheus metrics to OTLP).
 - **Traces:** OTLP/HTTP receiver with Kubernetes metadata enrichment (pod/node/labels via informer lookups) and OTLP trace export/forwarding pipeline.
-- **Exporters:** stdout, OTLP (logs/metrics/traces), and Loki log sinks with buffered batching/retries for log export; additional backends and compression/backpressure policies planned.
-- **Ops:** single static Go binary, health endpoint, Prometheus-format KubeRush self-metrics (`/metrics`), namespace/label filtering, and RBAC examples.
+- **Exporters:** stdout, OTLP (logs/metrics/traces), Loki, Splunk HEC, Elasticsearch, and Prometheus Remote Write sinks/exporters with buffered batching/retries and configurable pipeline controls; additional vendor backends and advanced delivery policies planned.
+- **Ops:** single static Go binary, health endpoint, Prometheus-format KubeRush self-metrics (`/metrics`), namespace/label filtering, sharding, CLI/config feature flags, Helm/Kustomize manifests, and RBAC examples.
 
 ## Documentation
 - ADR: [`docs/adr/0001-kuberush-initial-architecture.md`](docs/adr/0001-kuberush-initial-architecture.md)
 - Plan: [`docs/plan.md`](docs/plan.md)
+- Install & exporter examples: [`docs/INSTALL_AND_EXAMPLES.md`](docs/INSTALL_AND_EXAMPLES.md)
+- Delivery semantics: [`docs/DELIVERY_SEMANTICS.md`](docs/DELIVERY_SEMANTICS.md)
 - Benchmarks (template): [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
 
 ## Status

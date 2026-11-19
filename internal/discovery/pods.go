@@ -28,9 +28,10 @@ type PodWatcher struct {
 	lister    corelisters.PodLister
 	handler   PodHandler
 	kubeCfg   config.KubernetesConfig
+	sharding  config.ShardingConfig
 }
 
-func NewPodWatcher(clientset kubernetes.Interface, handler PodHandler, kubeCfg config.KubernetesConfig) *PodWatcher {
+func NewPodWatcher(clientset kubernetes.Interface, handler PodHandler, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig) *PodWatcher {
 	var opts []informers.SharedInformerOption
 	if kubeCfg.LabelSelector != "" {
 		if _, err := labels.Parse(kubeCfg.LabelSelector); err == nil {
@@ -47,6 +48,7 @@ func NewPodWatcher(clientset kubernetes.Interface, handler PodHandler, kubeCfg c
 		lister:    factory.Core().V1().Pods().Lister(),
 		handler:   handler,
 		kubeCfg:   kubeCfg,
+		sharding:  sharding,
 	}
 }
 
@@ -58,7 +60,7 @@ func (pw *PodWatcher) Lookup(namespace, name string) (*corev1.Pod, bool) {
 	if err != nil || pod == nil {
 		return nil, false
 	}
-	if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+	if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Name, pod.Labels, pw.sharding) {
 		return nil, false
 	}
 	return pod, true
@@ -73,7 +75,7 @@ func (pw *PodWatcher) LookupByIP(ip string) (*corev1.Pod, bool) {
 		return nil, false
 	}
 	for _, pod := range pods {
-		if pod == nil || !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+		if pod == nil || !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Name, pod.Labels, pw.sharding) {
 			continue
 		}
 		if pod.Status.PodIP == ip {
@@ -88,12 +90,20 @@ func (pw *PodWatcher) LookupByIP(ip string) (*corev1.Pod, bool) {
 	return nil, false
 }
 
+func (pw *PodWatcher) LookupPodMeta(namespace, name string) (string, map[string]string, bool) {
+	pod, ok := pw.Lookup(namespace, name)
+	if !ok || pod == nil {
+		return "", nil, false
+	}
+	return pod.Spec.NodeName, pod.Labels, true
+}
+
 func (pw *PodWatcher) Run(ctx context.Context) error {
 	podInformer := pw.factory.Core().V1().Pods().Informer()
 	_, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if pod, ok := obj.(*corev1.Pod); ok {
-				if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+				if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Name, pod.Labels, pw.sharding) {
 					return
 				}
 				fmt.Printf("[pod:add] %s/%s phase=%s\n", pod.Namespace, pod.Name, pod.Status.Phase)
@@ -104,7 +114,7 @@ func (pw *PodWatcher) Run(ctx context.Context) error {
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			if pod, ok := newObj.(*corev1.Pod); ok {
-				if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+				if !pw.kubeCfg.PodAllowed(pod.Namespace, pod.Name, pod.Labels, pw.sharding) {
 					if pw.handler != nil {
 						pw.handler.OnPodDelete(pod)
 					}

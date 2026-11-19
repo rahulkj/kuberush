@@ -7,15 +7,34 @@ exporters:
   otlp_logs:
     enabled: false
     endpoint: "http://localhost:4318"
+    compression: "none" # none|gzip
   otlp_traces:
     enabled: false
     endpoint: "http://localhost:4318"
+    compression: "none" # none|gzip
   otlp_metrics:
     enabled: false
     endpoint: "http://localhost:4318"
+    compression: "none" # none|gzip
   loki:
     enabled: false
     endpoint: "http://localhost:3100"
+  splunk_hec:
+    enabled: false
+    endpoint: "https://localhost:8088/services/collector/event"
+    token: ""
+    source: "kuberush"
+    sourcetype: "_json"
+    index: ""
+  elasticsearch:
+    enabled: false
+    endpoint: "http://localhost:9200"
+    index: "kuberush-logs"
+    username: ""
+    password: ""
+  prometheus_remote_write:
+    enabled: false
+    endpoint: "http://localhost:9009/api/v1/push"
 
 kubernetes:
   namespaces:
@@ -27,6 +46,29 @@ log_pipeline:
   batch_size: 200
   flush_interval_ms: 2000
   queue_size: 10000
+  max_retries: 3
+  retry_backoff_ms: 500
+  drop_policy: "drop_newest" # drop_newest|drop_oldest
+
+metrics:
+  scrape_interval_seconds: 30
+  allow_metric_regex: []
+  drop_metric_regex: []
+  allow_label_regex: []
+  drop_label_regex: []
+  max_series_per_scrape: 0
+
+features:
+  logs: true
+  metrics_scrape: true
+  traces_ingest: true
+  node_log_tail: false
+
+sharding:
+  enabled: false
+  strategy: "hashmod" # hashmod
+  replicas: 1
+  replica_index: 0
 
 # Future sections (planned):
 # logging:

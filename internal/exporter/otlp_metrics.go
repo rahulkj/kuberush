@@ -16,14 +16,16 @@ import (
 )
 
 type OTLPMetricsExporter struct {
-	endpoint string
-	client   *http.Client
+	endpoint    string
+	compression string
+	client      *http.Client
 }
 
-func NewOTLPMetricsExporter(endpoint string) *OTLPMetricsExporter {
+func NewOTLPMetricsExporter(endpoint, compression string) *OTLPMetricsExporter {
 	return &OTLPMetricsExporter{
-		endpoint: endpoint,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		endpoint:    endpoint,
+		compression: compression,
+		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -38,11 +40,18 @@ func (e *OTLPMetricsExporter) Export(ctx context.Context, req *colmetricspb.Expo
 		return fmt.Errorf("marshal otlp metrics proto: %w", err)
 	}
 	url := strings.TrimRight(e.endpoint, "/") + "/v1/metrics"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	body, encoding, err := maybeGzip(data, e.compression)
+	if err != nil {
+		return fmt.Errorf("compress otlp metrics: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	if encoding != "" {
+		httpReq.Header.Set("Content-Encoding", encoding)
+	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("post otlp metrics: %w", err)

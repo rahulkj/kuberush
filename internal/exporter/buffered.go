@@ -11,6 +11,9 @@ type BufferedLogSink struct {
 	next          LogSink
 	batchSize     int
 	flushInterval time.Duration
+	maxRetries    int
+	retryBackoff  time.Duration
+	dropPolicy    string
 	queue         chan LogRecord
 	stop          chan struct{}
 	done          chan struct{}
@@ -19,7 +22,7 @@ type BufferedLogSink struct {
 	mu            sync.Mutex
 }
 
-func NewBufferedLogSink(next LogSink, batchSize int, flushInterval time.Duration, queueSize int) *BufferedLogSink {
+func NewBufferedLogSink(next LogSink, batchSize int, flushInterval time.Duration, queueSize, maxRetries int, retryBackoff time.Duration, dropPolicy string) *BufferedLogSink {
 	if batchSize <= 0 {
 		batchSize = 200
 	}
@@ -29,10 +32,22 @@ func NewBufferedLogSink(next LogSink, batchSize int, flushInterval time.Duration
 	if queueSize <= 0 {
 		queueSize = 10000
 	}
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	if retryBackoff <= 0 {
+		retryBackoff = 500 * time.Millisecond
+	}
+	if dropPolicy == "" {
+		dropPolicy = "drop_newest"
+	}
 	b := &BufferedLogSink{
 		next:          next,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
+		maxRetries:    maxRetries,
+		retryBackoff:  retryBackoff,
+		dropPolicy:    dropPolicy,
 		queue:         make(chan LogRecord, queueSize),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
@@ -48,12 +63,23 @@ func (b *BufferedLogSink) WriteLogs(ctx context.Context, records []LogRecord) er
 		select {
 		case b.queue <- r:
 		default:
+			if b.dropPolicy == "drop_oldest" {
+				select {
+				case <-b.queue:
+				default:
+				}
+				select {
+				case b.queue <- r:
+					continue
+				default:
+				}
+			}
 			b.mu.Lock()
 			b.dropped++
 			d := b.dropped
 			b.mu.Unlock()
 			if d == 1 || d%1000 == 0 {
-				fmt.Printf("[exporter:%s] dropping log records due to full queue (dropped=%d)\n", b.next.Name(), d)
+				fmt.Printf("[exporter:%s] dropping log records due to full queue policy=%s (dropped=%d)\n", b.next.Name(), b.dropPolicy, d)
 			}
 		}
 	}
@@ -74,19 +100,19 @@ func (b *BufferedLogSink) run() {
 		copy(out, batch)
 		batch = batch[:0]
 		var err error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := 0; attempt < b.maxRetries; attempt++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err = b.next.WriteLogs(ctx, out)
 			cancel()
 			if err == nil {
 				return
 			}
-			if attempt < 2 {
-				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			if attempt < b.maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * b.retryBackoff)
 			}
 		}
 		if err != nil {
-			fmt.Printf("[exporter:%s] flush error after retries: %v\n", b.next.Name(), err)
+			fmt.Printf("[exporter:%s] flush error after %d retries: %v\n", b.next.Name(), b.maxRetries, err)
 		}
 	}
 

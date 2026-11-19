@@ -13,14 +13,16 @@ import (
 )
 
 type OTLPTracesExporter struct {
-	endpoint string
-	client   *http.Client
+	endpoint    string
+	compression string
+	client      *http.Client
 }
 
-func NewOTLPTracesExporter(endpoint string) *OTLPTracesExporter {
+func NewOTLPTracesExporter(endpoint, compression string) *OTLPTracesExporter {
 	return &OTLPTracesExporter{
-		endpoint: endpoint,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		endpoint:    endpoint,
+		compression: compression,
+		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -35,11 +37,18 @@ func (e *OTLPTracesExporter) Export(ctx context.Context, req *coltracepb.ExportT
 		return fmt.Errorf("marshal otlp traces proto: %w", err)
 	}
 	url := strings.TrimRight(e.endpoint, "/") + "/v1/traces"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	body, encoding, err := maybeGzip(data, e.compression)
+	if err != nil {
+		return fmt.Errorf("compress otlp traces: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	if encoding != "" {
+		httpReq.Header.Set("Content-Encoding", encoding)
+	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("post otlp traces: %w", err)

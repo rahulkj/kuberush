@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuberush
+  labels:
+    app: kuberush
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kuberush
+  template:
+    metadata:
+      labels:
+        app: kuberush
+    spec:
+      serviceAccountName: kuberush
+      containers:
+        - name: kuberush
+          image: kuberush:latest
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/kuberush/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kuberush
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: kuberush-config

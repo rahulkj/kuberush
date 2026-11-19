@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+
+	"github.com/rahulkj/kubemon/internal/config"
 )
 
 type TargetInfo struct {
@@ -25,7 +28,7 @@ type TargetInfo struct {
 
 // ConvertPrometheusToOTLP converts Prometheus exposition text/format metrics into an OTLP metrics export request.
 // It supports counters, gauges, untyped, summaries, and histograms on a best-effort basis.
-func ConvertPrometheusToOTLP(body []byte, target TargetInfo, scrapeTime time.Time) (*colmetricspb.ExportMetricsServiceRequest, error) {
+func ConvertPrometheusToOTLP(body []byte, target TargetInfo, scrapeTime time.Time, cfg config.MetricsConfig) (*colmetricspb.ExportMetricsServiceRequest, error) {
 	parser := expfmt.TextParser{}
 	mfs, err := parser.TextToMetricFamilies(bytes.NewReader(body))
 	if err != nil {
@@ -35,6 +38,10 @@ func ConvertPrometheusToOTLP(body []byte, target TargetInfo, scrapeTime time.Tim
 	ts := uint64(scrapeTime.UnixNano())
 	baseAttrs := targetAttributes(target)
 	var out []*metricspb.Metric
+	remainingSeries := cfg.MaxSeriesPerScrape
+	if remainingSeries <= 0 {
+		remainingSeries = int(^uint(0) >> 1)
+	}
 
 	names := make([]string, 0, len(mfs))
 	for n := range mfs {
@@ -43,13 +50,20 @@ func ConvertPrometheusToOTLP(body []byte, target TargetInfo, scrapeTime time.Tim
 	sort.Strings(names)
 
 	for _, name := range names {
+		if !metricNameAllowed(name, cfg) {
+			continue
+		}
 		mf := mfs[name]
 		if mf == nil {
 			continue
 		}
-		m := convertFamily(name, mf, ts, baseAttrs)
+		m, used := convertFamily(name, mf, ts, baseAttrs, cfg, remainingSeries)
 		if m != nil {
 			out = append(out, m)
+			remainingSeries -= used
+			if remainingSeries <= 0 {
+				break
+			}
 		}
 	}
 
@@ -76,6 +90,63 @@ func ConvertPrometheusToOTLP(body []byte, target TargetInfo, scrapeTime time.Tim
 	}, nil
 }
 
+func metricNameAllowed(name string, cfg config.MetricsConfig) bool {
+	if len(cfg.AllowMetricRegex) > 0 {
+		ok := false
+		for _, p := range cfg.AllowMetricRegex {
+			if p == "" {
+				continue
+			}
+			if re, err := regexp.Compile(p); err == nil && re.MatchString(name) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	for _, p := range cfg.DropMetricRegex {
+		if p == "" {
+			continue
+		}
+		if re, err := regexp.Compile(p); err == nil && re.MatchString(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func labelAllowed(key string, cfg config.MetricsConfig) bool {
+	if key == "" {
+		return false
+	}
+	if len(cfg.AllowLabelRegex) > 0 {
+		ok := false
+		for _, p := range cfg.AllowLabelRegex {
+			if p == "" {
+				continue
+			}
+			if re, err := regexp.Compile(p); err == nil && re.MatchString(key) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	for _, p := range cfg.DropLabelRegex {
+		if p == "" {
+			continue
+		}
+		if re, err := regexp.Compile(p); err == nil && re.MatchString(key) {
+			return false
+		}
+	}
+	return true
+}
+
 func targetAttributes(target TargetInfo) []*commonpb.KeyValue {
 	attrs := []*commonpb.KeyValue{
 		{Key: "k8s.namespace.name", Value: strValue(target.Namespace)},
@@ -88,20 +159,23 @@ func targetAttributes(target TargetInfo) []*commonpb.KeyValue {
 	return attrs
 }
 
-func convertFamily(name string, mf *dto.MetricFamily, ts uint64, baseAttrs []*commonpb.KeyValue) *metricspb.Metric {
+func convertFamily(name string, mf *dto.MetricFamily, ts uint64, baseAttrs []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
+	if limit <= 0 {
+		return nil, 0
+	}
 	switch mf.GetType() {
 	case dto.MetricType_GAUGE:
-		return gaugeMetric(name, mf, ts, baseAttrs)
+		return gaugeMetric(name, mf, ts, baseAttrs, cfg, limit)
 	case dto.MetricType_COUNTER:
-		return counterMetric(name, mf, ts, baseAttrs)
+		return counterMetric(name, mf, ts, baseAttrs, cfg, limit)
 	case dto.MetricType_UNTYPED:
-		return untypedAsGaugeMetric(name, mf, ts, baseAttrs)
+		return untypedAsGaugeMetric(name, mf, ts, baseAttrs, cfg, limit)
 	case dto.MetricType_SUMMARY:
-		return summaryMetric(name, mf, ts, baseAttrs)
+		return summaryMetric(name, mf, ts, baseAttrs, cfg, limit)
 	case dto.MetricType_HISTOGRAM:
-		return histogramMetric(name, mf, ts, baseAttrs)
+		return histogramMetric(name, mf, ts, baseAttrs, cfg, limit)
 	default:
-		return nil
+		return nil, 0
 	}
 }
 
@@ -116,7 +190,7 @@ func metricBase(name string, mf *dto.MetricFamily) *metricspb.Metric {
 	return m
 }
 
-func dataPointAttrs(base []*commonpb.KeyValue, labels []*dto.LabelPair) []*commonpb.KeyValue {
+func dataPointAttrs(base []*commonpb.KeyValue, labels []*dto.LabelPair, cfg config.MetricsConfig) []*commonpb.KeyValue {
 	if len(labels) == 0 {
 		return base
 	}
@@ -124,6 +198,9 @@ func dataPointAttrs(base []*commonpb.KeyValue, labels []*dto.LabelPair) []*commo
 	attrs = append(attrs, base...)
 	for _, lp := range labels {
 		if lp == nil || lp.GetName() == "" {
+			continue
+		}
+		if !labelAllowed(lp.GetName(), cfg) {
 			continue
 		}
 		attrs = append(attrs, &commonpb.KeyValue{Key: lp.GetName(), Value: strValue(lp.GetValue())})
@@ -145,48 +222,57 @@ func numberPoint(ts uint64, attrs []*commonpb.KeyValue, v float64) *metricspb.Nu
 	return dp
 }
 
-func gaugeMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue) *metricspb.Metric {
+func gaugeMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
 	var pts []*metricspb.NumberDataPoint
 	for _, m := range mf.Metric {
+		if len(pts) >= limit {
+			break
+		}
 		if m == nil || m.Gauge == nil {
 			continue
 		}
-		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label), m.Gauge.GetValue()))
+		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label, cfg), m.Gauge.GetValue()))
 	}
 	if len(pts) == 0 {
-		return nil
+		return nil, 0
 	}
 	out := metricBase(name, mf)
 	out.Data = &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: pts}}
-	return out
+	return out, len(pts)
 }
 
-func untypedAsGaugeMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue) *metricspb.Metric {
+func untypedAsGaugeMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
 	var pts []*metricspb.NumberDataPoint
 	for _, m := range mf.Metric {
+		if len(pts) >= limit {
+			break
+		}
 		if m == nil || m.Untyped == nil {
 			continue
 		}
-		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label), m.Untyped.GetValue()))
+		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label, cfg), m.Untyped.GetValue()))
 	}
 	if len(pts) == 0 {
-		return nil
+		return nil, 0
 	}
 	out := metricBase(name, mf)
 	out.Data = &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: pts}}
-	return out
+	return out, len(pts)
 }
 
-func counterMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue) *metricspb.Metric {
+func counterMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
 	var pts []*metricspb.NumberDataPoint
 	for _, m := range mf.Metric {
+		if len(pts) >= limit {
+			break
+		}
 		if m == nil || m.Counter == nil {
 			continue
 		}
-		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label), m.Counter.GetValue()))
+		pts = append(pts, numberPoint(ts, dataPointAttrs(base, m.Label, cfg), m.Counter.GetValue()))
 	}
 	if len(pts) == 0 {
-		return nil
+		return nil, 0
 	}
 	out := metricBase(name, mf)
 	out.Data = &metricspb.Metric_Sum{Sum: &metricspb.Sum{
@@ -194,12 +280,15 @@ func counterMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonp
 		IsMonotonic:            true,
 		DataPoints:             pts,
 	}}
-	return out
+	return out, len(pts)
 }
 
-func summaryMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue) *metricspb.Metric {
+func summaryMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
 	var pts []*metricspb.SummaryDataPoint
 	for _, m := range mf.Metric {
+		if len(pts) >= limit {
+			break
+		}
 		if m == nil || m.Summary == nil {
 			continue
 		}
@@ -213,23 +302,26 @@ func summaryMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonp
 		}
 		pts = append(pts, &metricspb.SummaryDataPoint{
 			TimeUnixNano:   ts,
-			Attributes:     dataPointAttrs(base, m.Label),
+			Attributes:     dataPointAttrs(base, m.Label, cfg),
 			Count:          s.GetSampleCount(),
 			Sum:            s.GetSampleSum(),
 			QuantileValues: qv,
 		})
 	}
 	if len(pts) == 0 {
-		return nil
+		return nil, 0
 	}
 	out := metricBase(name, mf)
 	out.Data = &metricspb.Metric_Summary{Summary: &metricspb.Summary{DataPoints: pts}}
-	return out
+	return out, len(pts)
 }
 
-func histogramMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue) *metricspb.Metric {
+func histogramMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commonpb.KeyValue, cfg config.MetricsConfig, limit int) (*metricspb.Metric, int) {
 	var pts []*metricspb.HistogramDataPoint
 	for _, m := range mf.Metric {
+		if len(pts) >= limit {
+			break
+		}
 		if m == nil || m.Histogram == nil {
 			continue
 		}
@@ -244,7 +336,6 @@ func histogramMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commo
 			}
 			upper := b.GetUpperBound()
 			c := b.GetCumulativeCount()
-			// Prometheus cumulative bucket counts -> OTLP bucket counts are per-bucket in order
 			if c >= prev {
 				counts = append(counts, c-prev)
 			} else {
@@ -255,32 +346,30 @@ func histogramMetric(name string, mf *dto.MetricFamily, ts uint64, base []*commo
 				bounds = append(bounds, upper)
 			}
 		}
-		// final +Inf bucket count implied by total count
 		if h.GetSampleCount() >= prev {
 			counts = append(counts, h.GetSampleCount()-prev)
 		}
 		dp := &metricspb.HistogramDataPoint{
 			TimeUnixNano:   ts,
-			Attributes:     dataPointAttrs(base, m.Label),
+			Attributes:     dataPointAttrs(base, m.Label, cfg),
 			Count:          h.GetSampleCount(),
 			BucketCounts:   counts,
 			ExplicitBounds: bounds,
 		}
-		// Sum is optional in proto, but we can set it if present
 		if h.SampleSum != nil {
 			dp.Sum = ptrFloat64(h.GetSampleSum())
 		}
 		pts = append(pts, dp)
 	}
 	if len(pts) == 0 {
-		return nil
+		return nil, 0
 	}
 	out := metricBase(name, mf)
 	out.Data = &metricspb.Metric_Histogram{Histogram: &metricspb.Histogram{
 		AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
 		DataPoints:             pts,
 	}}
-	return out
+	return out, len(pts)
 }
 
 func ptrFloat64(v float64) *float64 { return &v }

@@ -13,18 +13,21 @@ type HealthConfig struct {
 }
 
 type OTLPLogsExporterConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
+	Enabled     bool   `yaml:"enabled"`
+	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string `yaml:"compression"` // none|gzip
 }
 
 type OTLPTracesExporterConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
+	Enabled     bool   `yaml:"enabled"`
+	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string `yaml:"compression"` // none|gzip
 }
 
 type OTLPMetricsExporterConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:4318
+	Enabled     bool   `yaml:"enabled"`
+	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string `yaml:"compression"` // none|gzip
 }
 
 type LokiExporterConfig struct {
@@ -32,12 +35,37 @@ type LokiExporterConfig struct {
 	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:3100
 }
 
+type SplunkHECExporterConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Endpoint   string `yaml:"endpoint"` // e.g. https://splunk:8088/services/collector/event
+	Token      string `yaml:"token"`
+	Source     string `yaml:"source"`
+	Sourcetype string `yaml:"sourcetype"`
+	Index      string `yaml:"index"`
+}
+
+type ElasticsearchExporterConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:9200
+	Index    string `yaml:"index"`    // e.g. kuberush-logs
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
+type PrometheusRemoteWriteExporterConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:9009/api/v1/push
+}
+
 type ExportersConfig struct {
-	Stdout      bool                      `yaml:"stdout"`
-	OTLPLogs    OTLPLogsExporterConfig    `yaml:"otlp_logs"`
-	OTLPTraces  OTLPTracesExporterConfig  `yaml:"otlp_traces"`
-	OTLPMetrics OTLPMetricsExporterConfig `yaml:"otlp_metrics"`
-	Loki        LokiExporterConfig        `yaml:"loki"`
+	Stdout                bool                                `yaml:"stdout"`
+	OTLPLogs              OTLPLogsExporterConfig              `yaml:"otlp_logs"`
+	OTLPTraces            OTLPTracesExporterConfig            `yaml:"otlp_traces"`
+	OTLPMetrics           OTLPMetricsExporterConfig           `yaml:"otlp_metrics"`
+	Loki                  LokiExporterConfig                  `yaml:"loki"`
+	SplunkHEC             SplunkHECExporterConfig             `yaml:"splunk_hec"`
+	Elasticsearch         ElasticsearchExporterConfig         `yaml:"elasticsearch"`
+	PrometheusRemoteWrite PrometheusRemoteWriteExporterConfig `yaml:"prometheus_remote_write"`
 }
 
 type NamespacesConfig struct {
@@ -48,6 +76,29 @@ type NamespacesConfig struct {
 type KubernetesConfig struct {
 	Namespaces    NamespacesConfig `yaml:"namespaces"`
 	LabelSelector string           `yaml:"label_selector"`
+}
+
+type MetricsConfig struct {
+	ScrapeIntervalSeconds int      `yaml:"scrape_interval_seconds"`
+	AllowMetricRegex      []string `yaml:"allow_metric_regex"`
+	DropMetricRegex       []string `yaml:"drop_metric_regex"`
+	AllowLabelRegex       []string `yaml:"allow_label_regex"`
+	DropLabelRegex        []string `yaml:"drop_label_regex"`
+	MaxSeriesPerScrape    int      `yaml:"max_series_per_scrape"`
+}
+
+type FeaturesConfig struct {
+	Logs          bool `yaml:"logs"`
+	MetricsScrape bool `yaml:"metrics_scrape"`
+	TracesIngest  bool `yaml:"traces_ingest"`
+	NodeLogTail   bool `yaml:"node_log_tail"`
+}
+
+type ShardingConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	Strategy     string `yaml:"strategy"` // hashmod
+	Replicas     int    `yaml:"replicas"`
+	ReplicaIndex int    `yaml:"replica_index"`
 }
 
 func (k KubernetesConfig) NamespaceAllowed(ns string) bool {
@@ -71,24 +122,47 @@ func (k KubernetesConfig) NamespaceAllowed(ns string) bool {
 	return true
 }
 
-func (k KubernetesConfig) PodAllowed(ns string, podLabels map[string]string) bool {
+func (k KubernetesConfig) PodAllowed(ns, name string, podLabels map[string]string, sharding ShardingConfig) bool {
 	if !k.NamespaceAllowed(ns) {
 		return false
 	}
-	if k.LabelSelector == "" {
-		return true
+	if k.LabelSelector != "" {
+		sel, err := labels.Parse(k.LabelSelector)
+		if err != nil || !sel.Matches(labels.Set(podLabels)) {
+			if err == nil {
+				return false
+			}
+		}
 	}
-	sel, err := labels.Parse(k.LabelSelector)
-	if err != nil {
-		return true
+	if sharding.Enabled && sharding.Strategy == "hashmod" && sharding.Replicas > 0 {
+		idx := sharding.ReplicaIndex
+		if idx < 0 || idx >= sharding.Replicas {
+			return false
+		}
+		h := fnv32(ns + "/" + name)
+		if int(h%uint32(sharding.Replicas)) != idx {
+			return false
+		}
 	}
-	return sel.Matches(labels.Set(podLabels))
+	return true
+}
+
+func fnv32(s string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return h
 }
 
 type LogPipelineConfig struct {
-	BatchSize       int `yaml:"batch_size"`
-	FlushIntervalMS int `yaml:"flush_interval_ms"`
-	QueueSize       int `yaml:"queue_size"`
+	BatchSize       int    `yaml:"batch_size"`
+	FlushIntervalMS int    `yaml:"flush_interval_ms"`
+	QueueSize       int    `yaml:"queue_size"`
+	MaxRetries      int    `yaml:"max_retries"`
+	RetryBackoffMS  int    `yaml:"retry_backoff_ms"`
+	DropPolicy      string `yaml:"drop_policy"` // drop_newest|drop_oldest
 }
 
 type Config struct {
@@ -96,6 +170,9 @@ type Config struct {
 	Exporters   ExportersConfig   `yaml:"exporters"`
 	Kubernetes  KubernetesConfig  `yaml:"kubernetes"`
 	LogPipeline LogPipelineConfig `yaml:"log_pipeline"`
+	Metrics     MetricsConfig     `yaml:"metrics"`
+	Features    FeaturesConfig    `yaml:"features"`
+	Sharding    ShardingConfig    `yaml:"sharding"`
 }
 
 func Default() *Config {
@@ -106,20 +183,38 @@ func Default() *Config {
 		Exporters: ExportersConfig{
 			Stdout: true,
 			OTLPLogs: OTLPLogsExporterConfig{
-				Enabled:  false,
-				Endpoint: "http://localhost:4318",
+				Enabled:     false,
+				Endpoint:    "http://localhost:4318",
+				Compression: "none",
 			},
 			OTLPTraces: OTLPTracesExporterConfig{
-				Enabled:  false,
-				Endpoint: "http://localhost:4318",
+				Enabled:     false,
+				Endpoint:    "http://localhost:4318",
+				Compression: "none",
 			},
 			OTLPMetrics: OTLPMetricsExporterConfig{
-				Enabled:  false,
-				Endpoint: "http://localhost:4318",
+				Enabled:     false,
+				Endpoint:    "http://localhost:4318",
+				Compression: "none",
 			},
 			Loki: LokiExporterConfig{
 				Enabled:  false,
 				Endpoint: "http://localhost:3100",
+			},
+			SplunkHEC: SplunkHECExporterConfig{
+				Enabled:    false,
+				Endpoint:   "https://localhost:8088/services/collector/event",
+				Sourcetype: "_json",
+				Source:     "kuberush",
+			},
+			Elasticsearch: ElasticsearchExporterConfig{
+				Enabled:  false,
+				Endpoint: "http://localhost:9200",
+				Index:    "kuberush-logs",
+			},
+			PrometheusRemoteWrite: PrometheusRemoteWriteExporterConfig{
+				Enabled:  false,
+				Endpoint: "http://localhost:9009/api/v1/push",
 			},
 		},
 		Kubernetes: KubernetesConfig{
@@ -129,6 +224,23 @@ func Default() *Config {
 			BatchSize:       200,
 			FlushIntervalMS: 2000,
 			QueueSize:       10000,
+			MaxRetries:      3,
+			RetryBackoffMS:  500,
+			DropPolicy:      "drop_newest",
+		},
+		Metrics: MetricsConfig{
+			ScrapeIntervalSeconds: 30,
+		},
+		Features: FeaturesConfig{
+			Logs:          true,
+			MetricsScrape: true,
+			TracesIngest:  true,
+			NodeLogTail:   false,
+		},
+		Sharding: ShardingConfig{
+			Enabled:  false,
+			Strategy: "hashmod",
+			Replicas: 1,
 		},
 	}
 }
@@ -168,6 +280,42 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("KUBERUSH_LOKI_ENDPOINT"); v != "" {
 		cfg.Exporters.Loki.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_SPLUNK_HEC_ENABLED"); v == "true" || v == "1" {
+		cfg.Exporters.SplunkHEC.Enabled = true
+	}
+	if v := os.Getenv("KUBERUSH_SPLUNK_HEC_ENDPOINT"); v != "" {
+		cfg.Exporters.SplunkHEC.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_SPLUNK_HEC_TOKEN"); v != "" {
+		cfg.Exporters.SplunkHEC.Token = v
+	}
+	if v := os.Getenv("KUBERUSH_ELASTICSEARCH_ENABLED"); v == "true" || v == "1" {
+		cfg.Exporters.Elasticsearch.Enabled = true
+	}
+	if v := os.Getenv("KUBERUSH_ELASTICSEARCH_ENDPOINT"); v != "" {
+		cfg.Exporters.Elasticsearch.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_ELASTICSEARCH_INDEX"); v != "" {
+		cfg.Exporters.Elasticsearch.Index = v
+	}
+	if v := os.Getenv("KUBERUSH_PROM_REMOTE_WRITE_ENABLED"); v == "true" || v == "1" {
+		cfg.Exporters.PrometheusRemoteWrite.Enabled = true
+	}
+	if v := os.Getenv("KUBERUSH_PROM_REMOTE_WRITE_ENDPOINT"); v != "" {
+		cfg.Exporters.PrometheusRemoteWrite.Endpoint = v
+	}
+	if v := os.Getenv("KUBERUSH_FEATURE_LOGS"); v == "false" || v == "0" {
+		cfg.Features.Logs = false
+	}
+	if v := os.Getenv("KUBERUSH_FEATURE_METRICS_SCRAPE"); v == "false" || v == "0" {
+		cfg.Features.MetricsScrape = false
+	}
+	if v := os.Getenv("KUBERUSH_FEATURE_TRACES_INGEST"); v == "false" || v == "0" {
+		cfg.Features.TracesIngest = false
+	}
+	if v := os.Getenv("KUBERUSH_FEATURE_NODE_LOG_TAIL"); v == "true" || v == "1" {
+		cfg.Features.NodeLogTail = true
 	}
 	return cfg, nil
 }

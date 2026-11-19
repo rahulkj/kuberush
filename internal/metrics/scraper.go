@@ -16,19 +16,26 @@ import (
 )
 
 type Scraper struct {
-	client          kubernetes.Interface
-	sinks           []exporter.LogSink
-	metricsExporter *exporter.OTLPMetricsExporter
-	kubeCfg         config.KubernetesConfig
-	selfMetrics     *selfmetrics.Metrics
+	client              kubernetes.Interface
+	sinks               []exporter.LogSink
+	metricsExporter     *exporter.OTLPMetricsExporter
+	remoteWriteExporter *exporter.PrometheusRemoteWriteExporter
+	kubeCfg             config.KubernetesConfig
+	sharding            config.ShardingConfig
+	selfMetrics         *selfmetrics.Metrics
+	metricsCfg          config.MetricsConfig
 }
 
-func NewScraper(client kubernetes.Interface, sinks []exporter.LogSink, metricsExporter *exporter.OTLPMetricsExporter, kubeCfg config.KubernetesConfig, sm *selfmetrics.Metrics) *Scraper {
-	return &Scraper{client: client, sinks: sinks, metricsExporter: metricsExporter, kubeCfg: kubeCfg, selfMetrics: sm}
+func NewScraper(client kubernetes.Interface, sinks []exporter.LogSink, metricsExporter *exporter.OTLPMetricsExporter, remoteWriteExporter *exporter.PrometheusRemoteWriteExporter, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig, sm *selfmetrics.Metrics, metricsCfg config.MetricsConfig) *Scraper {
+	return &Scraper{client: client, sinks: sinks, metricsExporter: metricsExporter, remoteWriteExporter: remoteWriteExporter, kubeCfg: kubeCfg, sharding: sharding, selfMetrics: sm, metricsCfg: metricsCfg}
 }
 
 func (s *Scraper) Run(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := time.Duration(s.metricsCfg.ScrapeIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// run once immediately
 	s.scrapeOnce(ctx)
@@ -50,7 +57,7 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, pod := range pods.Items {
-		if !s.kubeCfg.PodAllowed(pod.Namespace, pod.Labels) {
+		if !s.kubeCfg.PodAllowed(pod.Namespace, pod.Name, pod.Labels, s.sharding) {
 			continue
 		}
 		if pod.Status.Phase != "Running" || pod.Status.PodIP == "" {
@@ -122,13 +129,28 @@ func (s *Scraper) scrapeOnce(ctx context.Context) {
 					Pod:       pod.Name,
 					NodeName:  pod.Spec.NodeName,
 					URL:       url,
-				}, time.Now())
+				}, time.Now(), s.metricsCfg)
 				if err != nil {
-					fmt.Printf("[metrics] convert %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+					fmt.Printf("[metrics] convert otlp %s/%s error: %v\n", pod.Namespace, pod.Name, err)
 				} else if converted != nil {
 					if err := s.metricsExporter.Export(ctx, converted); err != nil {
-						fmt.Printf("[metrics] export converted %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+						fmt.Printf("[metrics] export converted otlp %s/%s error: %v\n", pod.Namespace, pod.Name, err)
 					}
+				}
+			}
+		}
+		if s.remoteWriteExporter != nil && success && len(body) > 0 {
+			rw, err := ConvertPrometheusToRemoteWrite(body, TargetInfo{
+				Namespace: pod.Namespace,
+				Pod:       pod.Name,
+				NodeName:  pod.Spec.NodeName,
+				URL:       url,
+			}, time.Now(), s.metricsCfg)
+			if err != nil {
+				fmt.Printf("[metrics] convert remote_write %s/%s error: %v\n", pod.Namespace, pod.Name, err)
+			} else if rw != nil {
+				if err := s.remoteWriteExporter.Export(ctx, rw); err != nil {
+					fmt.Printf("[metrics] export remote_write %s/%s error: %v\n", pod.Namespace, pod.Name, err)
 				}
 			}
 		}

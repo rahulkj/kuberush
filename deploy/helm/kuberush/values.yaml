@@ -1,0 +1,108 @@
+replicaCount: 1
+
+image:
+  repository: kuberush
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+  clusterWide: true
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+config:
+  health:
+    listen_address: ":8080"
+  exporters:
+    stdout: true
+    otlp_logs:
+      enabled: false
+      endpoint: "http://otel-collector:4318"
+      compression: "none"
+    otlp_traces:
+      enabled: false
+      endpoint: "http://otel-collector:4318"
+      compression: "none"
+    otlp_metrics:
+      enabled: false
+      endpoint: "http://otel-collector:4318"
+      compression: "none"
+    loki:
+      enabled: false
+      endpoint: "http://loki:3100"
+    splunk_hec:
+      enabled: false
+      endpoint: "https://splunk:8088/services/collector/event"
+      token: ""
+      source: "kuberush"
+      sourcetype: "_json"
+      index: ""
+    elasticsearch:
+      enabled: false
+      endpoint: "http://elasticsearch:9200"
+      index: "kuberush-logs"
+      username: ""
+      password: ""
+    prometheus_remote_write:
+      enabled: false
+      endpoint: "http://prometheus:9090/api/v1/write"
+  kubernetes:
+    namespaces:
+      include: []
+      exclude: []
+    label_selector: ""
+  log_pipeline:
+    batch_size: 200
+    flush_interval_ms: 2000
+    queue_size: 10000
+    max_retries: 3
+    retry_backoff_ms: 500
+    drop_policy: "drop_newest"
+  metrics:
+    scrape_interval_seconds: 30
+    allow_metric_regex: []
+    drop_metric_regex: []
+    allow_label_regex: []
+    drop_label_regex: []
+    max_series_per_scrape: 0
+  features:
+    logs: true
+    metrics_scrape: true
+    traces_ingest: true
+    node_log_tail: false
+
+env: []
+
+# For DaemonSet node-log-tail mode (optional)
+daemonSet:
+  enabled: false
+  hostLogPath: /var/log/pods
+  hostLogMountPath: /var/log/pods
+  nodeNameEnv: true
