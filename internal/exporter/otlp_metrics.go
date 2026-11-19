@@ -18,13 +18,19 @@ import (
 type OTLPMetricsExporter struct {
 	endpoint    string
 	compression string
+	headers     map[string]string
 	client      *http.Client
 }
 
-func NewOTLPMetricsExporter(endpoint, compression string) *OTLPMetricsExporter {
+func NewOTLPMetricsExporter(endpoint, compression string, headers map[string]string) *OTLPMetricsExporter {
+	cp := map[string]string{}
+	for k, v := range headers {
+		cp[k] = v
+	}
 	return &OTLPMetricsExporter{
 		endpoint:    endpoint,
 		compression: compression,
+		headers:     cp,
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -51,6 +57,11 @@ func (e *OTLPMetricsExporter) Export(ctx context.Context, req *colmetricspb.Expo
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
 	if encoding != "" {
 		httpReq.Header.Set("Content-Encoding", encoding)
+	}
+	for k, v := range e.headers {
+		if k != "" {
+			httpReq.Header.Set(k, v)
+		}
 	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {

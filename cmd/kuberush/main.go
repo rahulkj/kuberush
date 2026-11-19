@@ -141,7 +141,48 @@ func main() {
 		baseSinks = append(baseSinks, exporter.NewStdoutLogSink())
 	}
 	if cfg.Exporters.OTLPLogs.Enabled {
-		baseSinks = append(baseSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint, cfg.Exporters.OTLPLogs.Compression))
+		baseSinks = append(baseSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.OTLPLogs.Endpoint, cfg.Exporters.OTLPLogs.Compression, cfg.Exporters.OTLPLogs.Headers))
+	}
+	if cfg.Exporters.NewRelic.Enabled && cfg.Exporters.NewRelic.Endpoint != "" {
+		h := map[string]string{}
+		for k, v := range cfg.Exporters.NewRelic.Headers {
+			h[k] = v
+		}
+		if cfg.Exporters.NewRelic.APIKey != "" {
+			if _, ok := h["api-key"]; !ok {
+				h["api-key"] = cfg.Exporters.NewRelic.APIKey
+			}
+		}
+		baseSinks = append(baseSinks, exporter.NewOTLPLogsExporter(cfg.Exporters.NewRelic.Endpoint, "gzip", h))
+	}
+	if cfg.Exporters.DatadogLogs.Enabled {
+		baseSinks = append(baseSinks, exporter.NewDatadogLogsExporter(cfg.Exporters.DatadogLogs.Endpoint, cfg.Exporters.DatadogLogs.Site, cfg.Exporters.DatadogLogs.APIKey, cfg.Exporters.DatadogLogs.Service))
+	}
+	if cfg.Exporters.CloudWatchLogs.Enabled {
+		cw, err := exporter.NewCloudWatchLogsExporter(context.Background(), cfg.Exporters.CloudWatchLogs.Region, cfg.Exporters.CloudWatchLogs.Endpoint, cfg.Exporters.CloudWatchLogs.LogGroup, cfg.Exporters.CloudWatchLogs.LogStream)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize cloudwatch logs exporter: %v\n", err)
+		} else {
+			baseSinks = append(baseSinks, cw)
+		}
+	}
+	if cfg.Exporters.GCPCloudLogging.Enabled {
+		baseSinks = append(baseSinks, exporter.NewGCPCloudLoggingExporter(
+			cfg.Exporters.GCPCloudLogging.Endpoint,
+			cfg.Exporters.GCPCloudLogging.ProjectID,
+			cfg.Exporters.GCPCloudLogging.LogName,
+			cfg.Exporters.GCPCloudLogging.AccessToken,
+			cfg.Exporters.GCPCloudLogging.Headers,
+		))
+	}
+	if cfg.Exporters.AzureMonitorLogs.Enabled {
+		baseSinks = append(baseSinks, exporter.NewAzureMonitorLogsExporter(
+			cfg.Exporters.AzureMonitorLogs.Endpoint,
+			cfg.Exporters.AzureMonitorLogs.RuleID,
+			cfg.Exporters.AzureMonitorLogs.StreamName,
+			cfg.Exporters.AzureMonitorLogs.AccessToken,
+			cfg.Exporters.AzureMonitorLogs.Headers,
+		))
 	}
 	if cfg.Exporters.Loki.Enabled {
 		baseSinks = append(baseSinks, exporter.NewLokiLogsExporter(cfg.Exporters.Loki.Endpoint))
@@ -170,15 +211,27 @@ func main() {
 	flushInterval := time.Duration(cfg.LogPipeline.FlushIntervalMS) * time.Millisecond
 	retryBackoff := time.Duration(cfg.LogPipeline.RetryBackoffMS) * time.Millisecond
 	for _, s := range baseSinks {
-		bs := exporter.NewBufferedLogSink(s, cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize, cfg.LogPipeline.MaxRetries, retryBackoff, cfg.LogPipeline.DropPolicy)
+		bs := exporter.NewBufferedLogSink(s, cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize, cfg.LogPipeline.MaxRetries, retryBackoff, cfg.LogPipeline.DropPolicy, cfg.LogPipeline.DLQDir, cfg.LogPipeline.SpoolDir)
 		logSinks = append(logSinks, bs)
-		fmt.Printf("exporter initialized: log sink=%s (buffered batch=%d flush=%s queue=%d retries=%d drop=%s)\n", s.Name(), cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize, cfg.LogPipeline.MaxRetries, cfg.LogPipeline.DropPolicy)
+		fmt.Printf("exporter initialized: log sink=%s (buffered batch=%d flush=%s queue=%d retries=%d drop=%s dlq=%t spool=%t)\n", s.Name(), cfg.LogPipeline.BatchSize, flushInterval, cfg.LogPipeline.QueueSize, cfg.LogPipeline.MaxRetries, cfg.LogPipeline.DropPolicy, cfg.LogPipeline.DLQDir != "", cfg.LogPipeline.SpoolDir != "")
 	}
 
 	var metricsExporter *exporter.OTLPMetricsExporter
 	if cfg.Exporters.OTLPMetrics.Enabled {
-		metricsExporter = exporter.NewOTLPMetricsExporter(cfg.Exporters.OTLPMetrics.Endpoint, cfg.Exporters.OTLPMetrics.Compression)
+		metricsExporter = exporter.NewOTLPMetricsExporter(cfg.Exporters.OTLPMetrics.Endpoint, cfg.Exporters.OTLPMetrics.Compression, cfg.Exporters.OTLPMetrics.Headers)
 		fmt.Printf("exporter initialized: metrics sink=%s\n", metricsExporter.Name())
+	} else if cfg.Exporters.NewRelic.Enabled && cfg.Exporters.NewRelic.Endpoint != "" {
+		h := map[string]string{}
+		for k, v := range cfg.Exporters.NewRelic.Headers {
+			h[k] = v
+		}
+		if cfg.Exporters.NewRelic.APIKey != "" {
+			if _, ok := h["api-key"]; !ok {
+				h["api-key"] = cfg.Exporters.NewRelic.APIKey
+			}
+		}
+		metricsExporter = exporter.NewOTLPMetricsExporter(cfg.Exporters.NewRelic.Endpoint, "gzip", h)
+		fmt.Printf("exporter initialized: metrics sink=%s (newrelic)\n", metricsExporter.Name())
 	}
 	var remoteWriteExporter *exporter.PrometheusRemoteWriteExporter
 	if cfg.Exporters.PrometheusRemoteWrite.Enabled {
@@ -200,17 +253,31 @@ func main() {
 	}
 
 	var traceProcessor *traces.Processor
-	if cfg.Features.TracesIngest && (cfg.Exporters.OTLPTraces.Enabled || cfg.Exporters.OTLPTraces.Endpoint != "") {
+	if cfg.Features.TracesIngest && (cfg.Exporters.OTLPTraces.Enabled || cfg.Exporters.OTLPTraces.Endpoint != "" || (cfg.Exporters.NewRelic.Enabled && cfg.Exporters.NewRelic.Endpoint != "")) {
 		var enricher *traces.Enricher
 		if podWatcher != nil {
 			enricher = traces.NewEnricher(podWatcher)
 		}
 		var traceExporter *exporter.OTLPTracesExporter
+		traceEndpoint := cfg.Exporters.OTLPTraces.Endpoint
 		if cfg.Exporters.OTLPTraces.Enabled {
-			traceExporter = exporter.NewOTLPTracesExporter(cfg.Exporters.OTLPTraces.Endpoint, cfg.Exporters.OTLPTraces.Compression)
+			traceExporter = exporter.NewOTLPTracesExporter(cfg.Exporters.OTLPTraces.Endpoint, cfg.Exporters.OTLPTraces.Compression, cfg.Exporters.OTLPTraces.Headers)
 			fmt.Printf("exporter initialized: traces sink=%s\n", traceExporter.Name())
+		} else if cfg.Exporters.NewRelic.Enabled && cfg.Exporters.NewRelic.Endpoint != "" {
+			h := map[string]string{}
+			for k, v := range cfg.Exporters.NewRelic.Headers {
+				h[k] = v
+			}
+			if cfg.Exporters.NewRelic.APIKey != "" {
+				if _, ok := h["api-key"]; !ok {
+					h["api-key"] = cfg.Exporters.NewRelic.APIKey
+				}
+			}
+			traceEndpoint = cfg.Exporters.NewRelic.Endpoint
+			traceExporter = exporter.NewOTLPTracesExporter(traceEndpoint, "gzip", h)
+			fmt.Printf("exporter initialized: traces sink=%s (newrelic)\n", traceExporter.Name())
 		}
-		traceProcessor = traces.NewProcessor(enricher, traceExporter, cfg.Exporters.OTLPTraces.Endpoint, sm)
+		traceProcessor = traces.NewProcessor(enricher, traceExporter, traceEndpoint, sm)
 		if enricher != nil {
 			fmt.Println("traces pipeline enabled (OTLP HTTP ingest -> k8s enrichment -> export)")
 		} else {
@@ -249,14 +316,15 @@ func main() {
 				root = "/var/log/pods"
 			}
 			checkpointPath := os.Getenv("KUBERUSH_NODE_LOG_CHECKPOINT_PATH")
-			nodeTailer := logs.NewNodeTailer(root, checkpointPath, logSinks, sm, cfg.Kubernetes, cfg.Sharding, podWatcher)
+			nodeName := os.Getenv("NODE_NAME")
+			nodeTailer := logs.NewNodeTailer(root, checkpointPath, nodeName, logSinks, sm, cfg.Kubernetes, cfg.Sharding, podWatcher)
 			go func() {
 				_ = nodeTailer.Run(ctx)
 			}()
 			if checkpointPath != "" {
-				fmt.Printf("node log tail mode enabled (root=%s checkpoint=%s)\n", root, checkpointPath)
+				fmt.Printf("node log tail mode enabled (root=%s checkpoint=%s node=%s)\n", root, checkpointPath, nodeName)
 			} else {
-				fmt.Printf("node log tail mode enabled (root=%s)\n", root)
+				fmt.Printf("node log tail mode enabled (root=%s node=%s)\n", root, nodeName)
 			}
 		}
 		if cfg.Features.MetricsScrape {

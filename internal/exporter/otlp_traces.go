@@ -15,13 +15,19 @@ import (
 type OTLPTracesExporter struct {
 	endpoint    string
 	compression string
+	headers     map[string]string
 	client      *http.Client
 }
 
-func NewOTLPTracesExporter(endpoint, compression string) *OTLPTracesExporter {
+func NewOTLPTracesExporter(endpoint, compression string, headers map[string]string) *OTLPTracesExporter {
+	cp := map[string]string{}
+	for k, v := range headers {
+		cp[k] = v
+	}
 	return &OTLPTracesExporter{
 		endpoint:    endpoint,
 		compression: compression,
+		headers:     cp,
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -48,6 +54,11 @@ func (e *OTLPTracesExporter) Export(ctx context.Context, req *coltracepb.ExportT
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
 	if encoding != "" {
 		httpReq.Header.Set("Content-Encoding", encoding)
+	}
+	for k, v := range e.headers {
+		if k != "" {
+			httpReq.Header.Set(k, v)
+		}
 	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {

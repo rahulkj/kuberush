@@ -11,24 +11,35 @@ This document describes the current delivery behavior of KubeRush exporters and 
 ## Log pipeline (`exporters.stdout`, `otlp_logs`, `loki`, `splunk_hec`, `elasticsearch`)
 
 - **Buffering:** each base log sink is wrapped with a buffered/batched sink.
-  - Queue: bounded channel (`log_pipeline.queue_size`, default 10000)
+  - Queue: bounded in-memory channel (`log_pipeline.queue_size`, default 10000)
   - Batching: flush when batch reaches `log_pipeline.batch_size` (default 200) or on `log_pipeline.flush_interval_ms` (default 2000ms)
+- **Persistent spool / replay (optional):** if `log_pipeline.spool_dir` is set, batches are written as pending spool files before export attempts.
+  - On successful export, spool files are removed.
+  - On startup, pending spool batches are replayed and retried.
+  - This provides batch-level persistence across restarts for spooled batches; records still only in the in-memory queue (not yet batched/spooled) may be lost on crash.
+- **Dead-letter queue (optional):** if `log_pipeline.dlq_dir` is set, batches that fail after retries are written as JSON files (with sink/error metadata) to the DLQ directory for inspection/replay.
+  - If DLQ is not configured (or DLQ write fails) and spool is enabled, failed batches may remain in pending spool for later retry/replay.
 - **Backpressure / drop policy:** when the queue is full:
   - `drop_newest` (default): newly enqueued records are dropped
   - `drop_oldest`: oldest queued record is discarded to make room (best-effort)
   - Drops are logged periodically; per-sink drop counters are not yet fully exposed as metrics.
 - **Retries:** flush attempts retry synchronously up to `log_pipeline.max_retries` (default 3) with linear backoff steps based on `log_pipeline.retry_backoff_ms` (default 500ms).
-  - After retries are exhausted, the batch is logged as failed and discarded (no persistent dead-letter queue).
-- **Ordering:** records are enqueued in observed order per collection path, but batching, retries, and multi-sink fanout do not guarantee strict global ordering across sinks or after failures.
+  - After retries are exhausted, the batch is routed to DLQ/spool handling as configured (or logged and discarded).
+- **Ordering:** records are enqueued in observed order per collection path, but batching, retries, replay, and multi-sink fanout do not guarantee strict global ordering across sinks or after failures.
 
-## OTLP exporters
+## Exporters (vendor/backends)
 
-- **Logs:** exported as OTLP/HTTP protobuf to `${endpoint}/v1/logs`.
-- **Metrics:** exported as OTLP/HTTP protobuf to `${endpoint}/v1/metrics` (scrape-result metrics and converted scraped Prometheus metrics when enabled).
-- **Traces:** exported as OTLP/HTTP protobuf to `${endpoint}/v1/traces` after enrichment for protobuf payloads; non-protobuf trace payloads may be forwarded raw without enrichment when configured.
-- **Compression:** OTLP HTTP exporters support `compression: gzip|none` (request body `Content-Encoding: gzip` when enabled).
-- **Timeouts:** HTTP client/export operations use bounded timeouts (currently 10s in exporter paths).
-- **Partial failures:** a failed export attempt for a batch/request is retried according to the active pipeline/export path behavior; persistent failures result in dropped data for that batch/request.
+- **OTLP (logs/metrics/traces):** HTTP/protobuf to `${endpoint}/v1/{logs|metrics|traces}` with optional gzip compression and custom headers. Traces are enriched before protobuf export when possible; non-protobuf trace payloads may be forwarded raw.
+- **Prometheus Remote Write:** Snappy-compressed `prompb.WriteRequest` to configured endpoint (converted from scraped Prometheus exposition, best-effort).
+- **Loki:** pushes JSON streams to `/loki/api/v1/push` with core Kubernetes labels.
+- **Splunk HEC:** posts HEC JSON events to configured endpoint with optional token/source/sourcetype/index.
+- **Elasticsearch:** posts NDJSON bulk documents to `${endpoint}/_bulk`.
+- **Datadog Logs:** posts JSON logs to Datadog HTTP intake (API key via `DD-API-KEY`).
+- **New Relic:** convenience integration using OTLP exporters with New Relic endpoint and `api-key` header.
+- **CloudWatch Logs:** uses AWS SDK credential/config resolution and `PutLogEvents` (best-effort sequence token handling, log group/stream initialization).
+- **GCP Cloud Logging / Azure Monitor Logs:** HTTP exporters supporting configured endpoint and bearer token/custom headers (auth token acquisition/rotation is external to KubeRush unless provided).
+
+**Timeouts/retries:** exporter HTTP clients use bounded timeouts (typically 10s). Log sink batch retries and DLQ/spool behavior are handled by the buffered pipeline; metrics/trace export paths may log and drop on failure unless otherwise stated. Read backend-specific docs for auth, quotas, and schema requirements.
 
 ## Prometheus Remote Write (metrics)
 

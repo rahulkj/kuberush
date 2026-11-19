@@ -18,13 +18,19 @@ import (
 type OTLPLogsExporter struct {
 	endpoint    string
 	compression string
+	headers     map[string]string
 	client      *http.Client
 }
 
-func NewOTLPLogsExporter(endpoint, compression string) *OTLPLogsExporter {
+func NewOTLPLogsExporter(endpoint, compression string, headers map[string]string) *OTLPLogsExporter {
+	cp := map[string]string{}
+	for k, v := range headers {
+		cp[k] = v
+	}
 	return &OTLPLogsExporter{
 		endpoint:    endpoint,
 		compression: compression,
+		headers:     cp,
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -92,6 +98,11 @@ func (e *OTLPLogsExporter) WriteLogs(ctx context.Context, records []LogRecord) e
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
 	if encoding != "" {
 		httpReq.Header.Set("Content-Encoding", encoding)
+	}
+	for k, v := range e.headers {
+		if k != "" {
+			httpReq.Header.Set(k, v)
+		}
 	}
 	resp, err := e.client.Do(httpReq)
 	if err != nil {

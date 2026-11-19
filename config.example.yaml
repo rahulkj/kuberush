@@ -35,6 +35,38 @@ exporters:
   prometheus_remote_write:
     enabled: false
     endpoint: "http://localhost:9009/api/v1/push"
+    headers: {}
+  datadog_logs:
+    enabled: false
+    endpoint: "" # optional, defaults by site
+    site: "datadoghq.com"
+    api_key: ""
+    service: "kuberush"
+  cloudwatch_logs:
+    enabled: false
+    region: "us-east-1"
+    log_group: "/kuberush/logs"
+    log_stream: "kuberush"
+    endpoint: "" # optional custom endpoint
+  gcp_cloud_logging:
+    enabled: false
+    project_id: ""
+    log_name: "" # e.g. projects/<project>/logs/kuberush
+    endpoint: "https://logging.googleapis.com"
+    access_token: ""
+    headers: {}
+  azure_monitor_logs:
+    enabled: false
+    endpoint: "" # https://<dce>.ingest.monitor.azure.com
+    dcr_immutable_id: ""
+    stream_name: ""
+    access_token: ""
+    headers: {}
+  newrelic:
+    enabled: false
+    endpoint: "https://otlp.nr-data.net" # OTLP base endpoint
+    api_key: ""
+    headers: {}
 
 kubernetes:
   namespaces:
@@ -49,6 +81,8 @@ log_pipeline:
   max_retries: 3
   retry_backoff_ms: 500
   drop_policy: "drop_newest" # drop_newest|drop_oldest
+  dlq_dir: ""   # if set, failed batches are written here for inspection/replay
+  spool_dir: "" # if set, enables persistent disk-backed buffering (best-effort WAL)
 
 metrics:
   scrape_interval_seconds: 30

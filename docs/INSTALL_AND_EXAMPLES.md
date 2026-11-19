@@ -132,6 +132,66 @@ exporters:
     password: ""
 ```
 
+### Datadog Logs
+
+```yaml
+exporters:
+  datadog_logs:
+    enabled: true
+    site: "datadoghq.com"
+    api_key: "<dd-api-key>"
+    service: "kuberush"
+```
+
+### New Relic (OTLP convenience)
+
+```yaml
+exporters:
+  newrelic:
+    enabled: true
+    endpoint: "https://otlp.nr-data.net" # region-specific endpoint may apply
+    api_key: "<nr-license-key>"
+```
+
+> You can also use `exporters.otlp_logs/otlp_metrics/otlp_traces` with custom `headers` for vendor OTLP ingest endpoints.
+
+### CloudWatch Logs (AWS)
+
+```yaml
+exporters:
+  cloudwatch_logs:
+    enabled: true
+    region: "us-east-1"
+    log_group: "/kuberush/logs"
+    log_stream: "kuberush"
+```
+
+> Uses standard AWS credential/config resolution (environment, shared config, IAM role, etc.).
+
+### GCP Cloud Logging (HTTP, token-based)
+
+```yaml
+exporters:
+  gcp_cloud_logging:
+    enabled: true
+    project_id: "my-project"
+    log_name: "projects/my-project/logs/kuberush"
+    endpoint: "https://logging.googleapis.com"
+    access_token: "<oauth2-access-token>"
+```
+
+### Azure Monitor Logs (Logs Ingestion API, token-based)
+
+```yaml
+exporters:
+  azure_monitor_logs:
+    enabled: true
+    endpoint: "https://<dce>.ingest.monitor.azure.com"
+    dcr_immutable_id: "<dcr-immutable-id>"
+    stream_name: "Custom-Stream"
+    access_token: "<aad-access-token>"
+```
+
 ## Pipeline, filtering, and sharding
 
 ```yaml
@@ -148,6 +208,8 @@ log_pipeline:
   max_retries: 3
   retry_backoff_ms: 500
   drop_policy: "drop_newest" # or drop_oldest
+  dlq_dir: "/var/lib/kuberush/dlq"      # optional: failed batches
+  spool_dir: "/var/lib/kuberush/spool"  # optional: persistent batch spooling/replay
 
 sharding:
   enabled: true

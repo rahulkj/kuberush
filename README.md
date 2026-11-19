@@ -9,7 +9,7 @@
 - **Logs:** stream container logs (Kubernetes API follow) with K8s metadata enrichment.
 - **Metrics:** annotation-driven Prometheus endpoint scraping with enrichment and OTLP metrics ingestion/export support (including conversion of scraped Prometheus metrics to OTLP).
 - **Traces:** OTLP/HTTP receiver with Kubernetes metadata enrichment (pod/node/labels via informer lookups) and OTLP trace export/forwarding pipeline.
-- **Exporters:** stdout, OTLP (logs/metrics/traces), Loki, Splunk HEC, Elasticsearch, and Prometheus Remote Write sinks/exporters with buffered batching/retries and configurable pipeline controls; additional vendor backends and advanced delivery policies planned.
+- **Exporters:** stdout, OTLP (logs/metrics/traces), Loki, Splunk HEC, Elasticsearch, Prometheus Remote Write, Datadog Logs, CloudWatch Logs, GCP Cloud Logging, Azure Monitor Logs, and New Relic (OTLP convenience) sinks/exporters with buffered batching/retries, optional disk spool/DLQ, compression, and configurable pipeline controls.
 - **Ops:** single static Go binary, health endpoint, Prometheus-format KubeRush self-metrics (`/metrics`), namespace/label filtering, sharding, CLI/config feature flags, Helm/Kustomize manifests, and RBAC examples.
 
 ## Documentation

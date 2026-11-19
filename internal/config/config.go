@@ -13,21 +13,24 @@ type HealthConfig struct {
 }
 
 type OTLPLogsExporterConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
-	Compression string `yaml:"compression"` // none|gzip
+	Enabled     bool              `yaml:"enabled"`
+	Endpoint    string            `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string            `yaml:"compression"` // none|gzip
+	Headers     map[string]string `yaml:"headers"`
 }
 
 type OTLPTracesExporterConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
-	Compression string `yaml:"compression"` // none|gzip
+	Enabled     bool              `yaml:"enabled"`
+	Endpoint    string            `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string            `yaml:"compression"` // none|gzip
+	Headers     map[string]string `yaml:"headers"`
 }
 
 type OTLPMetricsExporterConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Endpoint    string `yaml:"endpoint"`    // e.g. http://localhost:4318
-	Compression string `yaml:"compression"` // none|gzip
+	Enabled     bool              `yaml:"enabled"`
+	Endpoint    string            `yaml:"endpoint"`    // e.g. http://localhost:4318
+	Compression string            `yaml:"compression"` // none|gzip
+	Headers     map[string]string `yaml:"headers"`
 }
 
 type LokiExporterConfig struct {
@@ -53,8 +56,50 @@ type ElasticsearchExporterConfig struct {
 }
 
 type PrometheusRemoteWriteExporterConfig struct {
+	Enabled  bool              `yaml:"enabled"`
+	Endpoint string            `yaml:"endpoint"` // e.g. http://localhost:9009/api/v1/push
+	Headers  map[string]string `yaml:"headers"`
+}
+
+type DatadogLogsExporterConfig struct {
 	Enabled  bool   `yaml:"enabled"`
-	Endpoint string `yaml:"endpoint"` // e.g. http://localhost:9009/api/v1/push
+	Endpoint string `yaml:"endpoint"` // e.g. https://http-intake.logs.datadoghq.com/api/v2/logs
+	APIKey   string `yaml:"api_key"`
+	Site     string `yaml:"site"` // optional, used to derive endpoint
+	Service  string `yaml:"service"`
+}
+
+type CloudWatchLogsExporterConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Region    string `yaml:"region"`
+	LogGroup  string `yaml:"log_group"`
+	LogStream string `yaml:"log_stream"`
+	Endpoint  string `yaml:"endpoint"` // optional custom endpoint
+}
+
+type GCPCloudLoggingExporterConfig struct {
+	Enabled     bool              `yaml:"enabled"`
+	ProjectID   string            `yaml:"project_id"`
+	LogName     string            `yaml:"log_name"`
+	Endpoint    string            `yaml:"endpoint"` // optional (https://logging.googleapis.com)
+	AccessToken string            `yaml:"access_token"`
+	Headers     map[string]string `yaml:"headers"`
+}
+
+type AzureMonitorLogsExporterConfig struct {
+	Enabled     bool              `yaml:"enabled"`
+	Endpoint    string            `yaml:"endpoint"` // Data Collection Endpoint (logs ingestion API base)
+	RuleID      string            `yaml:"dcr_immutable_id"`
+	StreamName  string            `yaml:"stream_name"`
+	AccessToken string            `yaml:"access_token"` // Bearer token (AAD) if provided
+	Headers     map[string]string `yaml:"headers"`
+}
+
+type NewRelicExporterConfig struct {
+	Enabled  bool              `yaml:"enabled"`
+	Endpoint string            `yaml:"endpoint"` // OTLP endpoint base (e.g. https://otlp.nr-data.net)
+	APIKey   string            `yaml:"api_key"`
+	Headers  map[string]string `yaml:"headers"`
 }
 
 type ExportersConfig struct {
@@ -66,6 +111,11 @@ type ExportersConfig struct {
 	SplunkHEC             SplunkHECExporterConfig             `yaml:"splunk_hec"`
 	Elasticsearch         ElasticsearchExporterConfig         `yaml:"elasticsearch"`
 	PrometheusRemoteWrite PrometheusRemoteWriteExporterConfig `yaml:"prometheus_remote_write"`
+	DatadogLogs           DatadogLogsExporterConfig           `yaml:"datadog_logs"`
+	CloudWatchLogs        CloudWatchLogsExporterConfig        `yaml:"cloudwatch_logs"`
+	GCPCloudLogging       GCPCloudLoggingExporterConfig       `yaml:"gcp_cloud_logging"`
+	AzureMonitorLogs      AzureMonitorLogsExporterConfig      `yaml:"azure_monitor_logs"`
+	NewRelic              NewRelicExporterConfig              `yaml:"newrelic"`
 }
 
 type NamespacesConfig struct {
@@ -163,6 +213,8 @@ type LogPipelineConfig struct {
 	MaxRetries      int    `yaml:"max_retries"`
 	RetryBackoffMS  int    `yaml:"retry_backoff_ms"`
 	DropPolicy      string `yaml:"drop_policy"` // drop_newest|drop_oldest
+	DLQDir          string `yaml:"dlq_dir"`
+	SpoolDir        string `yaml:"spool_dir"`
 }
 
 type Config struct {

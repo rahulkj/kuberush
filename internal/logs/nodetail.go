@@ -30,9 +30,16 @@ type NodeTailPodLookup interface {
 	LookupPodMeta(namespace, name string) (nodeName string, labels map[string]string, ok bool)
 }
 
+type fileState struct {
+	Offset int64  `json:"offset"`
+	Dev    uint64 `json:"dev,omitempty"`
+	Ino    uint64 `json:"ino,omitempty"`
+}
+
 type NodeTailer struct {
 	root           string
 	checkpointPath string
+	nodeName       string
 	sinks          []exporter.LogSink
 	metrics        *selfmetrics.Metrics
 	kubeCfg        config.KubernetesConfig
@@ -40,23 +47,24 @@ type NodeTailer struct {
 	lookup         NodeTailPodLookup
 
 	mu       sync.Mutex
-	offsets  map[string]int64
+	states   map[string]fileState
 	lastSave time.Time
 }
 
-func NewNodeTailer(root, checkpointPath string, sinks []exporter.LogSink, sm *selfmetrics.Metrics, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig, lookup NodeTailPodLookup) *NodeTailer {
+func NewNodeTailer(root, checkpointPath, nodeName string, sinks []exporter.LogSink, sm *selfmetrics.Metrics, kubeCfg config.KubernetesConfig, sharding config.ShardingConfig, lookup NodeTailPodLookup) *NodeTailer {
 	if root == "" {
 		root = "/var/log/pods"
 	}
 	n := &NodeTailer{
 		root:           root,
 		checkpointPath: checkpointPath,
+		nodeName:       nodeName,
 		sinks:          sinks,
 		metrics:        sm,
 		kubeCfg:        kubeCfg,
 		sharding:       sharding,
 		lookup:         lookup,
-		offsets:        make(map[string]int64),
+		states:         make(map[string]fileState),
 	}
 	n.loadCheckpoints()
 	return n
@@ -85,15 +93,25 @@ func (n *NodeTailer) loadCheckpoints() {
 	if err != nil {
 		return
 	}
-	var m map[string]int64
-	if err := json.Unmarshal(data, &m); err != nil {
+	// Try new format first
+	var m map[string]fileState
+	if err := json.Unmarshal(data, &m); err == nil {
+		n.mu.Lock()
+		for k, v := range m {
+			n.states[k] = v
+		}
+		n.mu.Unlock()
 		return
 	}
-	n.mu.Lock()
-	for k, v := range m {
-		n.offsets[k] = v
+	// Backward compat: old format map[string]int64
+	var old map[string]int64
+	if err := json.Unmarshal(data, &old); err == nil {
+		n.mu.Lock()
+		for k, v := range old {
+			n.states[k] = fileState{Offset: v}
+		}
+		n.mu.Unlock()
 	}
-	n.mu.Unlock()
 }
 
 func (n *NodeTailer) maybeSaveCheckpoints(force bool) {
@@ -105,8 +123,8 @@ func (n *NodeTailer) maybeSaveCheckpoints(force bool) {
 		n.mu.Unlock()
 		return
 	}
-	snapshot := make(map[string]int64, len(n.offsets))
-	for k, v := range n.offsets {
+	snapshot := make(map[string]fileState, len(n.states))
+	for k, v := range n.states {
 		snapshot[k] = v
 	}
 	n.lastSave = time.Now()
@@ -126,12 +144,31 @@ func (n *NodeTailer) maybeSaveCheckpoints(force bool) {
 	_ = os.Rename(tmp, n.checkpointPath)
 }
 
+func (n *NodeTailer) pruneCheckpoints(seen map[string]struct{}) {
+	if n.checkpointPath == "" {
+		return
+	}
+	n.mu.Lock()
+	changed := false
+	for k := range n.states {
+		if _, ok := seen[k]; !ok {
+			delete(n.states, k)
+			changed = true
+		}
+	}
+	n.mu.Unlock()
+	if changed {
+		n.maybeSaveCheckpoints(true)
+	}
+}
+
 func (n *NodeTailer) scanOnce(ctx context.Context) {
 	// Expected path: /var/log/pods/<namespace>_<pod>_<uid>/<container>/<n>.log
 	entries, err := os.ReadDir(n.root)
 	if err != nil {
 		return
 	}
+	seen := map[string]struct{}{}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -159,10 +196,12 @@ func (n *NodeTailer) scanOnce(ctx context.Context) {
 				continue
 			}
 			for _, f := range files {
+				seen[f] = struct{}{}
 				n.tailFile(ctx, ns, podName, c.Name(), f)
 			}
 		}
 	}
+	n.pruneCheckpoints(seen)
 }
 
 func (n *NodeTailer) tailFile(ctx context.Context, ns, podName, container, path string) {
@@ -170,21 +209,41 @@ func (n *NodeTailer) tailFile(ctx context.Context, ns, podName, container, path 
 	if err != nil {
 		return
 	}
+	id := fileIdentity(fi)
+
 	n.mu.Lock()
-	off, seen := n.offsets[path]
+	st, seen := n.states[path]
+	if seen && (st.Dev != id.Dev || st.Ino != id.Ino) {
+		// rotated/recreated file
+		st = fileState{Dev: id.Dev, Ino: id.Ino}
+		seen = false
+	}
+	off := st.Offset
 	if !seen || fi.Size() < off {
-		// start at end for files seen for the first time to avoid flooding historical logs
 		if !seen && fi.Size() > 0 {
 			off = fi.Size()
-		} else if !seen {
+		} else {
 			off = 0
 		}
 	}
 	n.mu.Unlock()
 
+	var nodeName string
+	var labels map[string]string
+	if n.lookup != nil {
+		nodeName, labels, _ = n.lookup.LookupPodMeta(ns, podName)
+	}
+	if n.nodeName != "" && nodeName != "" && nodeName != n.nodeName {
+		// per-node filtering guarantee when pod metadata is available
+		n.mu.Lock()
+		n.states[path] = fileState{Offset: fi.Size(), Dev: id.Dev, Ino: id.Ino}
+		n.mu.Unlock()
+		return
+	}
+
 	if fi.Size() <= off {
 		n.mu.Lock()
-		n.offsets[path] = fi.Size()
+		n.states[path] = fileState{Offset: fi.Size(), Dev: id.Dev, Ino: id.Ino}
 		n.mu.Unlock()
 		return
 	}
@@ -201,12 +260,6 @@ func (n *NodeTailer) tailFile(ctx context.Context, ns, podName, container, path 
 	// allow reasonably long log lines
 	buf := make([]byte, 64*1024)
 	reader.Buffer(buf, 1024*1024)
-
-	var nodeName string
-	var labels map[string]string
-	if n.lookup != nil {
-		nodeName, labels, _ = n.lookup.LookupPodMeta(ns, podName)
-	}
 
 	for reader.Scan() {
 		line := reader.Text()
@@ -229,13 +282,23 @@ func (n *NodeTailer) tailFile(ctx context.Context, ns, podName, container, path 
 			}
 		}
 	}
+	newOff, _ := f.Seek(0, io.SeekCurrent)
 	n.mu.Lock()
-	n.offsets[path], _ = f.Seek(0, io.SeekCurrent)
 	// if scanner stopped due to token too long etc., advance to file size to avoid tight loop
-	if st, err := f.Stat(); err == nil && n.offsets[path] < st.Size() && reader.Err() != nil {
-		n.offsets[path] = st.Size()
+	if stfi, err := f.Stat(); err == nil && newOff < stfi.Size() && reader.Err() != nil {
+		newOff = stfi.Size()
 	}
+	n.states[path] = fileState{Offset: newOff, Dev: id.Dev, Ino: id.Ino}
 	n.mu.Unlock()
+}
+
+type fileID struct {
+	Dev uint64
+	Ino uint64
+}
+
+func fileIdentity(fi os.FileInfo) fileID {
+	return fileIDFromSys(fi.Sys())
 }
 
 func parsePodDir(name string) (namespace, pod string, ok bool) {
@@ -255,12 +318,31 @@ func parsePodDir(name string) (namespace, pod string, ok bool) {
 
 func parseNodeLogLine(line string) string {
 	// CRI format: <timestamp> <stream> <P/F> <message>
-	// If not matching, return original line.
+	// Docker JSON format: {"log":"...","stream":"stdout","time":"..."}
+	if strings.HasPrefix(line, "{") && strings.Contains(line, "\"log\"") {
+		var obj struct {
+			Log string `json:"log"`
+		}
+		if err := json.Unmarshal([]byte(line), &obj); err == nil {
+			if strings.HasSuffix(obj.Log, "\n") {
+				return obj.Log
+			}
+			return obj.Log + "\n"
+		}
+	}
 	parts := strings.SplitN(line, " ", 4)
 	if len(parts) == 4 {
 		// basic heuristic: stream stdout/stderr and flag P/F
 		if (parts[1] == "stdout" || parts[1] == "stderr") && (parts[2] == "P" || parts[2] == "F") {
-			return parts[3] + "\n"
+			msg := parts[3]
+			if parts[2] == "P" {
+				// partial line; keep as-is without forcing newline
+				return msg
+			}
+			if !strings.HasSuffix(msg, "\n") {
+				return msg + "\n"
+			}
+			return msg
 		}
 	}
 	if !strings.HasSuffix(line, "\n") {
