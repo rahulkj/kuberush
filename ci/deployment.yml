@@ -66,6 +66,15 @@ spec:
             - containerPort: 8080
               name: http
               protocol: TCP
+          env:
+            - name: KUBERUSH_OTLP_TRACES_ENABLED
+              value: "false"
+            - name: KUBERUSH_OTLP_TRACES_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: KUBERUSH_OTLP_LOGS_ENABLED
+              value: "false"
+            - name: KUBERUSH_OTLP_LOGS_ENDPOINT
+              value: "http://otel-collector:4318"
           readinessProbe:
             httpGet:
               path: /readyz

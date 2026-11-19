@@ -34,8 +34,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Start health/metrics HTTP server
-	hSrv := health.NewServer(cfg.Health.ListenAddress)
+	// Start health/metrics HTTP server (also OTLP traces receiver)
+	hSrv := health.NewServer(cfg.Health.ListenAddress, cfg.Exporters.OTLPTraces.Enabled, cfg.Exporters.OTLPTraces.Endpoint)
 	go func() {
 		if err := hSrv.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "health server error: %v\n", err)
