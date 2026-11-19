@@ -15,6 +15,7 @@ import (
 	"github.com/rahulkj/kubemon/internal/health"
 	"github.com/rahulkj/kubemon/internal/kube"
 	"github.com/rahulkj/kubemon/internal/logs"
+	"github.com/rahulkj/kubemon/internal/metrics"
 )
 
 func main() {
@@ -70,6 +71,10 @@ func main() {
 				fmt.Fprintf(os.Stderr, "pod watcher error: %v\n", err)
 			}
 		}()
+		// Metrics scraper (minimal)
+		metricsScraper := metrics.NewScraper(clientset)
+		go metricsScraper.Run(ctx)
+		fmt.Println("metrics scraper started (annotation-based, every 30s)")
 	}
 
 	<-ctx.Done()

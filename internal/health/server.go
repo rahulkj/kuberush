@@ -25,10 +25,24 @@ func (s *Server) Start() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
-	// Basic metrics placeholder (Prometheus can be added later)
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = w.Write([]byte("# KubeRush metrics placeholder\n"))
+	})
+	// Minimal OTLP/HTTP trace receiver stub
+	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		// read and discard body (stub)
+		buf := make([]byte, 1024)
+		n, _ := r.Body.Read(buf)
+		for n > 0 {
+			n, _ = r.Body.Read(buf)
+		}
+		_ = r.Body.Close()
+		w.WriteHeader(http.StatusOK)
 	})
 
 	s.srv = &http.Server{
